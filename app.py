@@ -32,7 +32,7 @@ class Settings:
 
     @classmethod
     def load(cls) -> "Settings":
-        base_url = os.getenv("FUNPAY_BASE_URL", "https://funpay.com").rstrip("/")
+        base_url = "https://funpay.com"
         poll_seconds = float(os.getenv("FUNPAY_POLL_SECONDS", "3"))
         default_nodes_env = os.getenv("FUNPAY_DEFAULT_NODES", "")
         default_nodes: list[str] = []
@@ -118,8 +118,7 @@ def init_db() -> None:
 
 
 async def start_session(golden_key: str, base_url: Optional[str] = None):
-    base = (base_url or settings.base_url).rstrip("/")
-    settings.base_url = base
+    base = settings.base_url
     # stop existing poller
     poller_task = getattr(app.state, "poller_task", None)
     if poller_task:
@@ -398,7 +397,6 @@ class SessionStatus:
 
 class SessionCreate(SQLModel):
     golden_key: str
-    base_url: Optional[str] = None
 
 
 @app.get("/api/session")
@@ -415,7 +413,7 @@ async def session_status():
 async def session_create(payload: SessionCreate):
     if not payload.golden_key.strip():
         raise HTTPException(status_code=400, detail="Golden Key is required.")
-    client = await start_session(payload.golden_key.strip(), payload.base_url)
+    client = await start_session(payload.golden_key.strip())
     return {"status": "ok", "userId": client.user_id, "baseUrl": client.base_url}
 
 

@@ -25,9 +25,8 @@ const api = async (path, options = {}) => {
 }
 
 export default function App() {
-  const [session, setSession] = useState({ polling: false, userId: null, baseUrl: '' })
+  const [session, setSession] = useState({ polling: false, userId: null, baseUrl: 'https://funpay.com' })
   const [keyInput, setKeyInput] = useState('')
-  const [baseInput, setBaseInput] = useState('https://funpay.com')
   const [nodes, setNodes] = useState([])
   const [newNode, setNewNode] = useState('')
   const [activeNode, setActiveNode] = useState(null)
@@ -40,9 +39,9 @@ export default function App() {
   const [error, setError] = useState('')
 
   const statusLabel = useMemo(() => {
-    if (error) return { text: 'Error', tone: 'danger' }
-    if (session.polling) return { text: `Active · ${session.userId || ''}`, tone: 'success' }
-    return { text: 'Idle', tone: 'muted' }
+    if (error) return { text: 'Ошибка', tone: 'danger' }
+    if (session.polling) return { text: `В сети · ${session.userId || ''}`, tone: 'success' }
+    return { text: 'Ожидание', tone: 'muted' }
   }, [session, error])
 
   useEffect(() => {
@@ -60,7 +59,6 @@ export default function App() {
     try {
       const data = await api('/api/session')
       setSession(data)
-      if (data.baseUrl) setBaseInput(data.baseUrl)
       setError('')
     } catch (e) {
       setError(e.message)
@@ -76,9 +74,9 @@ export default function App() {
     try {
       const data = await api('/api/session', {
         method: 'POST',
-        body: JSON.stringify({ golden_key: keyInput.trim(), base_url: baseInput.trim() }),
+        body: JSON.stringify({ golden_key: keyInput.trim() }),
       })
-      setSession({ polling: true, userId: data.userId, baseUrl: data.baseUrl })
+      setSession({ polling: true, userId: data.userId, baseUrl: data.baseUrl || 'https://funpay.com' })
       setError('')
       await loadNodes()
     } catch (e) {
@@ -169,136 +167,132 @@ export default function App() {
     <div className="page">
       <header className="topbar">
         <div>
-          <p className="eyebrow">Funpay Control</p>
-          <h1>Inbox + Lots Dashboard</h1>
+          <h1 className="brand">FunPay Panel</h1>
+          <p className="sub">Сообщения и лоты</p>
         </div>
         <div className={`pill ${statusLabel.tone}`}>{statusLabel.text}</div>
       </header>
 
-      <div className="grid">
-        <section className="panel">
-          <div className="panel-header">
-            <h2>Session</h2>
-            <p className="sub">Golden Key is only stored in this session (memory).</p>
-          </div>
-          <label>Golden Key</label>
-          <input
-            value={keyInput}
-            onChange={(e) => setKeyInput(e.target.value)}
-            placeholder="Paste your golden_key cookie"
-          />
-          <label>Base URL</label>
-          <input value={baseInput} onChange={(e) => setBaseInput(e.target.value)} />
-          <button onClick={startSession} disabled={busy}>
-            {busy ? 'Starting…' : 'Start Session'}
-          </button>
-          {error && <div className="alert">{error}</div>}
-        </section>
-
-        <section className="panel">
-          <div className="panel-header">
-            <h2>Chat Nodes</h2>
-            <div className="sub">Add user IDs to monitor + reply.</div>
-          </div>
-          <div className="row">
+      <div className="layout">
+        <aside className="sidebar">
+          <section className="panel flat">
+            <div className="panel-header">
+              <h2>Сессия</h2>
+              <p className="sub">Ключ хранится только в памяти сессии.</p>
+            </div>
+            <label>Golden Key</label>
             <input
-              value={newNode}
-              onChange={(e) => setNewNode(e.target.value)}
-              placeholder="User ID"
+              value={keyInput}
+              onChange={(e) => setKeyInput(e.target.value)}
+              placeholder="Вставьте golden_key cookie"
             />
-            <button onClick={addNode}>Add</button>
-          </div>
-          <div className="chips">
-            {nodes.length === 0 && <div className="muted">No nodes yet.</div>}
-            {nodes.map((n) => (
-              <button
-                key={n.id}
-                className={`chip ${activeNode === n.id ? 'active' : ''}`}
-                onClick={() => selectNode(n.id)}
-              >
-                <span>{n.id}</span>
-                <small className="muted">last {n.last_id ?? 0}</small>
-              </button>
-            ))}
-          </div>
-        </section>
-      </div>
-
-      <div className="grid two">
-        <section className="panel">
-          <div className="panel-header">
-            <div>
-              <h2>Messages {activeNode ? `· ${activeNode}` : ''}</h2>
-              <div className="sub">{loadingMsgs ? 'Loading…' : 'Auto-refreshing every 4s'}</div>
-            </div>
-            <button onClick={() => activeNode && refreshMessages(activeNode, true)}>
-              Refresh
+            <button onClick={startSession} disabled={busy}>
+              {busy ? 'Запуск…' : 'Запустить'}
             </button>
-          </div>
-          <div className="messages">
-            {!activeNode && <div className="muted">Select a node to view messages.</div>}
-            {activeNode && messages.length === 0 && !loadingMsgs && (
-              <div className="muted">No messages yet.</div>
-            )}
-            {messages.map((m) => (
-              <article key={m.id} className="msg">
-                <div className="msg-head">
-                  <div>{m.username || 'Unknown'}</div>
-                  <div className="muted">#{m.id}{m.created_at ? ` · ${m.created_at}` : ''}</div>
+            {error && <div className="alert">{error}</div>}
+          </section>
+
+          <section className="panel flat">
+            <div className="panel-header">
+              <h2>Диалоги</h2>
+              <div className="sub">Добавьте ID пользователя.</div>
+            </div>
+            <div className="row">
+              <input
+                value={newNode}
+                onChange={(e) => setNewNode(e.target.value)}
+                placeholder="User ID"
+              />
+              <button onClick={addNode}>Добавить</button>
+            </div>
+            <div className="contact-list">
+              {nodes.length === 0 && <div className="muted">Нет диалогов.</div>}
+              {nodes.map((n) => (
+                <div
+                  key={n.id}
+                  className={`contact-item ${activeNode === n.id ? 'active' : ''}`}
+                  onClick={() => selectNode(n.id)}
+                >
+                  <div className="contact-title">{n.id}</div>
+                  <div className="contact-meta">last {n.last_id ?? 0}</div>
                 </div>
-                <p>{m.body}</p>
-              </article>
-            ))}
-          </div>
-          <div className="row">
-            <textarea
-              value={messageText}
-              onChange={(e) => setMessageText(e.target.value)}
-              rows={2}
-              placeholder="Reply…"
-            />
-            <button onClick={sendMessage} disabled={!activeNode}>
-              Send
-            </button>
-          </div>
-        </section>
-
-        <section className="panel">
-          <div className="panel-header">
-            <div>
-              <h2>Lots</h2>
-              <div className="sub">View your offers and adjust prices.</div>
+              ))}
             </div>
-            <button onClick={loadLots} disabled={loadingLots}>
-              {loadingLots ? 'Loading…' : 'Refresh'}
-            </button>
-          </div>
-          <div className="lots">
-            {lots.length === 0 && !loadingLots && (
-              <div className="muted">No lots loaded yet. Click Refresh.</div>
-            )}
-            {lots.map((group) => (
-              <div key={group.node} className="lot-group">
-                <div className="lot-head">
-                  <div>
+          </section>
+        </aside>
+
+        <main className="main">
+          <section className="panel chat-panel">
+            <div className="panel-header">
+              <div>
+                <h2>Сообщения {activeNode ? `· ${activeNode}` : ''}</h2>
+                <div className="sub">{loadingMsgs ? 'Загрузка…' : 'Автообновление каждые 4с'}</div>
+              </div>
+              <button onClick={() => activeNode && refreshMessages(activeNode, true)}>Обновить</button>
+            </div>
+            <div className="messages">
+              {!activeNode && <div className="muted">Выберите диалог слева.</div>}
+              {activeNode && messages.length === 0 && !loadingMsgs && (
+                <div className="muted">Нет сообщений.</div>
+              )}
+              {messages.map((m) => (
+                <article key={m.id} className="msg">
+                  <div className="msg-head">
+                    <div className="msg-author">{m.username || 'Unknown'}</div>
+                    <div className="muted">#{m.id}{m.created_at ? ` · ${m.created_at}` : ''}</div>
+                  </div>
+                  <p>{m.body}</p>
+                </article>
+              ))}
+            </div>
+            <div className="row">
+              <textarea
+                value={messageText}
+                onChange={(e) => setMessageText(e.target.value)}
+                rows={2}
+                placeholder="Написать..."
+              />
+              <button onClick={sendMessage} disabled={!activeNode}>
+                Отправить
+              </button>
+            </div>
+          </section>
+
+          <section className="panel lots-panel">
+            <div className="panel-header">
+              <div>
+                <h2>Лоты</h2>
+                <div className="sub">Ваши предложения, цены.</div>
+              </div>
+              <button onClick={loadLots} disabled={loadingLots}>
+                {loadingLots ? 'Загрузка…' : 'Обновить'}
+              </button>
+            </div>
+            <div className="lots">
+              {lots.length === 0 && !loadingLots && (
+                <div className="muted">Пока пусто. Нажмите «Обновить».</div>
+              )}
+              {lots.map((group) => (
+                <div key={group.node} className="lot-group">
+                  <div className="lot-head">
                     <div className="muted">{group.node}</div>
                     <h3>{group.group_name}</h3>
                   </div>
+                  <div className="lot-list">
+                    {group.offers.map((o, idx) => (
+                      <LotRow
+                        key={`${group.node}-${o.id || idx}`}
+                        groupNode={group.node}
+                        offer={o}
+                        onUpdate={updatePrice}
+                      />
+                    ))}
+                  </div>
                 </div>
-                <div className="lot-list">
-                  {group.offers.map((o, idx) => (
-                    <LotRow
-                      key={`${group.node}-${o.id || idx}`}
-                      groupNode={group.node}
-                      offer={o}
-                      onUpdate={updatePrice}
-                    />
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
+              ))}
+            </div>
+          </section>
+        </main>
       </div>
     </div>
   )
