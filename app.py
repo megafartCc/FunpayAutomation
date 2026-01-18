@@ -1,15 +1,17 @@
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import time
-import contextlib
 from dataclasses import dataclass
 from typing import Iterable, Optional
+from urllib.parse import urlparse
 
 import httpx
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Query
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 
 load_dotenv()
@@ -24,29 +26,19 @@ logging.basicConfig(
 class Settings:
     golden_key: Optional[str]
     base_url: str
-    messages_path: str
-    auth_header: str
-    auth_prefix: Optional[str]
     poll_seconds: float
-    default_nodes: list[int]
+    default_nodes: list[str]
 
     @classmethod
     def load(cls) -> "Settings":
         base_url = os.getenv("FUNPAY_BASE_URL", "https://funpay.com").rstrip("/")
-        messages_path = os.getenv("FUNPAY_MESSAGES_PATH", "/chat/messages")
-        auth_header = os.getenv("FUNPAY_AUTH_HEADER", "Authorization")
-        auth_prefix = os.getenv("FUNPAY_AUTH_PREFIX", "Bearer")
         poll_seconds = float(os.getenv("FUNPAY_POLL_SECONDS", "3"))
         default_nodes_env = os.getenv("FUNPAY_DEFAULT_NODES", "")
-        default_nodes: list[int] = []
+        default_nodes: list[str] = []
         for part in default_nodes_env.split(","):
             part = part.strip()
-            if not part:
-                continue
-            try:
-                default_nodes.append(int(part))
-            except ValueError:
-                logging.warning("Could not parse node id '%s' from FUNPAY_DEFAULT_NODES", part)
+            if part:
+                default_nodes.append(part)
 
         golden_key = os.getenv("FUNPAY_GOLDEN_KEY")
         if not golden_key:
@@ -55,23 +47,44 @@ class Settings:
         return cls(
             golden_key=golden_key,
             base_url=base_url,
-            messages_path=messages_path,
-            auth_header=auth_header,
-            auth_prefix=auth_prefix,
             poll_seconds=poll_seconds,
             default_nodes=default_nodes,
         )
 
-    @property
-    def auth_value(self) -> Optional[str]:
-        if not self.golden_key:
-            return None
-        if self.auth_prefix:
-            return f"{self.auth_prefix} {self.golden_key}"
-        return self.golden_key
-
 
 settings = Settings.load()
+
+
+# -------- Helpers --------
+def get_users_node(id1: str, id2: str) -> str:
+    a, b = sorted([str(id1), str(id2)], key=lambda x: int(x))
+    return f"users-{a}-{b}"
+
+
+def coerce_int(value: object) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+@dataclass
+class ParsedMessage:
+    username: Optional[str]
+    body: Optional[str]
+    created_at: Optional[str]
+
+
+def parse_message_html(html: str) -> ParsedMessage:
+    soup = BeautifulSoup(html or "", "html.parser")
+    body_el = soup.select_one(".chat-msg-text")
+    date_el = soup.select_one(".chat-msg-date")
+    username_el = soup.select_one(".media-user-name")
+    return ParsedMessage(
+        username=username_el.get_text(strip=True) if username_el else None,
+        body=body_el.get_text("\n", strip=True) if body_el else None,
+        created_at=(date_el.get("title") or date_el.get_text(strip=True)) if date_el else None,
+    )
 
 
 # -------- Database --------
@@ -79,14 +92,15 @@ engine = create_engine("sqlite:///data.db", connect_args={"check_same_thread": F
 
 
 class Node(SQLModel, table=True):
-    id: int = Field(primary_key=True)
+    id: str = Field(primary_key=True)
     last_id: Optional[int] = None
 
 
 class Message(SQLModel, table=True):
     id: int = Field(primary_key=True)
-    node_id: int = Field(primary_key=True)
-    sender: Optional[str] = None
+    node_id: str = Field(primary_key=True)
+    author: Optional[str] = None
+    username: Optional[str] = None
     body: Optional[str] = None
     created_at: Optional[str] = None
     raw: Optional[str] = None
@@ -107,22 +121,117 @@ def get_session():
         yield session
 
 
+# -------- Funpay client (funpayapi-like) --------
+class FunpayClient:
+    def __init__(self, base_url: str, golden_key: str):
+        self.base_url = base_url
+        self.golden_key = golden_key
+        self.client: Optional[httpx.AsyncClient] = None
+        self.user_id: Optional[str] = None
+        self.csrf_token: Optional[str] = None
+
+    async def start(self):
+        self.client = httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=20,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/129.0.0.0 Safari/537.36",
+            },
+        )
+        if self.golden_key:
+            domain = urlparse(self.base_url).hostname
+            self.client.cookies.set("golden_key", self.golden_key, domain=domain)
+        await self.load_app_data()
+
+    async def close(self):
+        if self.client:
+            await self.client.aclose()
+
+    async def ensure_ready(self):
+        if not self.client:
+            await self.start()
+        if not self.user_id or not self.csrf_token:
+            await self.load_app_data()
+
+    async def load_app_data(self):
+        await self._ensure_client()
+        resp = await self.client.get("/")
+        resp.raise_for_status()
+        self._capture_cookies(resp)
+        data = extract_app_data(resp.text)
+        self.user_id = str(data.get("userId"))
+        self.csrf_token = data.get("csrf-token")
+        if not self.user_id:
+            raise RuntimeError("Failed to read userId from app data.")
+
+    async def get_user_last_message(self, other_user_id: str) -> Optional[int]:
+        await self.ensure_ready()
+        chat_node = get_users_node(self.user_id, other_user_id)
+        resp = await self.client.get(f"/chat/?node={chat_node}")
+        resp.raise_for_status()
+        self._capture_cookies(resp)
+        soup = BeautifulSoup(resp.text, "html.parser")
+        items = soup.select(".chat-msg-item.chat-msg-with-head")
+        if not items:
+            return None
+        last = items[-1]
+        msg_id_attr = last.get("id")
+        if not msg_id_attr:
+            return None
+        try:
+            return int(msg_id_attr.split("-")[1])
+        except Exception:
+            return None
+
+    async def runner(self, objects: list[dict], request: Optional[dict] = None) -> dict:
+        await self.ensure_ready()
+        data = {
+            "objects": json.dumps(objects, ensure_ascii=False),
+            "request": json.dumps(request, ensure_ascii=False) if request is not None else "false",
+        }
+        headers = {
+            "accept": "application/json, text/javascript, */*; q=0.01",
+            "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "x-requested-with": "XMLHttpRequest",
+        }
+        resp = await self.client.post("/runner/", data=data, headers=headers)
+        self._capture_cookies(resp)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def _ensure_client(self):
+        if not self.client:
+            await self.start()
+
+    def _capture_cookies(self, resp: httpx.Response):
+        # httpx client keeps cookies automatically; nothing to do unless golden_key missing.
+        pass
+
+
+def extract_app_data(html: str) -> dict:
+    soup = BeautifulSoup(html, "html.parser")
+    body = soup.find("body")
+    if not body:
+        raise RuntimeError("No <body> found in Funpay response.")
+    raw = body.get("data-app-data")
+    if not raw:
+        raise RuntimeError("data-app-data not found on Funpay page.")
+    return json.loads(raw)
+
+
 # -------- FastAPI app --------
-app = FastAPI(title="Funpay Automation", version="0.1.0")
+app = FastAPI(title="Funpay Automation", version="0.2.0")
 
 
 @app.on_event("startup")
 async def on_startup():
     init_db()
     app.state.stop_event = asyncio.Event()
-    headers = {
-        "Accept": "application/json",
-        "User-Agent": "funpay-automation/0.1",
-    }
-    if settings.auth_value:
-        headers[settings.auth_header] = settings.auth_value
-    app.state.http_client = httpx.AsyncClient(base_url=settings.base_url, headers=headers, timeout=15)
+    app.state.fp_client = FunpayClient(settings.base_url, settings.golden_key or "")
     if settings.golden_key:
+        await app.state.fp_client.start()
         app.state.poller_task = asyncio.create_task(poller())
     else:
         app.state.poller_task = None
@@ -136,14 +245,15 @@ async def on_shutdown():
         poller_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await poller_task
-    client: httpx.AsyncClient = app.state.http_client
-    await client.aclose()
+    client: FunpayClient = app.state.fp_client
+    await client.close()
 
 
 # -------- API routes --------
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "polling": bool(settings.golden_key)}
+    client: FunpayClient = app.state.fp_client
+    return {"status": "ok", "polling": bool(settings.golden_key), "userId": client.user_id}
 
 
 @app.get("/api/nodes")
@@ -153,22 +263,23 @@ def list_nodes(session: Session = Depends(get_session)):
 
 
 class NodeCreate(SQLModel):
-    node: int
+    node: str
 
 
 @app.post("/api/nodes")
 def add_node(payload: NodeCreate, session: Session = Depends(get_session)):
-    existing = session.get(Node, payload.node)
+    node_id = str(payload.node)
+    existing = session.get(Node, node_id)
     if existing:
-        return {"status": "exists", "node": payload.node}
-    session.add(Node(id=payload.node))
+        return {"status": "exists", "node": node_id}
+    session.add(Node(id=node_id))
     session.commit()
-    return {"status": "ok", "node": payload.node}
+    return {"status": "ok", "node": node_id}
 
 
 @app.get("/api/messages")
 def list_messages(
-    node: int = Query(..., description="Chat node id"),
+    node: str = Query(..., description="User ID of the chat partner"),
     limit: int = Query(50, le=200, ge=1),
     offset: int = Query(0, ge=0),
     session: Session = Depends(get_session),
@@ -188,7 +299,7 @@ async def poller():
     if not settings.golden_key:
         return
 
-    client: httpx.AsyncClient = app.state.http_client
+    client: FunpayClient = app.state.fp_client
     stop_event: asyncio.Event = app.state.stop_event
     log = logging.getLogger("poller")
 
@@ -206,78 +317,84 @@ async def poller():
         await asyncio.sleep(delay)
 
 
-async def poll_node(session: Session, client: httpx.AsyncClient, log: logging.Logger, node: Node):
-    params = {"node": node.id}
-    if node.last_id is not None:
-        params["since_id"] = node.last_id
+async def poll_node(session: Session, client: FunpayClient, log: logging.Logger, node: Node):
+    await client.ensure_ready()
+    chat_node = get_users_node(client.user_id, node.id)
+
+    if node.last_id is None:
+        try:
+            last_seen = await client.get_user_last_message(node.id)
+            node.last_id = last_seen or 0
+            session.add(node)
+            session.commit()
+            log.info("Node %s: initialized last_id=%s", node.id, node.last_id)
+        except Exception as exc:
+            log.warning("Node %s: failed to fetch last message id: %s", node.id, exc)
+            node.last_id = node.last_id or 0
+
+    objects = [
+        {"type": "orders_counters", "id": client.user_id, "tag": "py", "data": True},
+        {"type": "chat_counter", "id": client.user_id, "tag": "py", "data": True},
+        {
+            "type": "chat_node",
+            "id": chat_node,
+            "data": {"node": chat_node, "last_message": int(node.last_id or 0), "content": ""},
+        },
+    ]
 
     try:
-        resp = await client.get(settings.messages_path, params=params)
+        payload = await client.runner(objects)
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        if status == 429:
+            log.warning("Node %s rate limited; backing off", node.id)
+            await asyncio.sleep(5)
+        elif status == 401:
+            log.error("Unauthorized (401) for node %s. Check FUNPAY_GOLDEN_KEY.", node.id)
+        else:
+            log.warning("Node %s HTTP error %s: %s", node.id, status, exc)
+        return
     except Exception as exc:
-        log.warning("Node %s request error: %s", node.id, exc)
+        log.warning("Node %s runner error: %s", node.id, exc)
         return
 
-    if resp.status_code == 429:
-        log.warning("Node %s rate limited; backing off", node.id)
-        await asyncio.sleep(5)
-        return
-    if resp.status_code == 401:
-        log.error("Unauthorized (401) for node %s. Check FUNPAY_GOLDEN_KEY.", node.id)
+    objects_resp = payload.get("objects", [])
+    if not isinstance(objects_resp, Iterable):
+        log.warning("Node %s unexpected runner payload", node.id)
         return
 
-    try:
-        resp.raise_for_status()
-    except Exception as exc:
-        log.warning("Node %s HTTP error: %s", node.id, exc)
-        return
-
-    try:
-        payload = resp.json()
-    except Exception as exc:
-        log.warning("Node %s JSON decode error: %s", node.id, exc)
-        return
-
-    messages = payload.get("messages", payload)
-    if not isinstance(messages, Iterable):
-        log.warning("Node %s unexpected payload shape: %s", node.id, type(messages))
-        return
-
-    new_last_id = node.last_id or 0
     inserted = 0
+    new_last_id = node.last_id or 0
 
-    for item in messages:
-        mid = coerce_int(item.get("id") or item.get("message_id") or item.get("mid"))
-        if mid is None:
+    for obj in objects_resp:
+        if obj.get("type") != "chat_node" or obj.get("id") != chat_node:
             continue
-        sender = item.get("from") or item.get("sender") or item.get("user")
-        body = item.get("text") or item.get("body") or item.get("message")
-        created_at = item.get("created_at") or item.get("timestamp") or item.get("time")
-
-        msg = Message(
-            id=mid,
-            node_id=node.id,
-            sender=str(sender) if sender is not None else None,
-            body=str(body) if body is not None else None,
-            created_at=str(created_at) if created_at is not None else None,
-            raw=json.dumps(item, ensure_ascii=False),
-        )
-        session.merge(msg)
-        inserted += 1
-        if mid > new_last_id:
-            new_last_id = mid
+        data = obj.get("data") or {}
+        messages = data.get("messages") or []
+        for item in messages:
+            mid = coerce_int(item.get("id"))
+            if mid is None:
+                continue
+            parsed = parse_message_html(item.get("html") or "")
+            msg = Message(
+                id=mid,
+                node_id=node.id,
+                author=str(item.get("author")) if item.get("author") is not None else None,
+                username=parsed.username,
+                body=parsed.body,
+                created_at=parsed.created_at,
+                raw=json.dumps(item, ensure_ascii=False),
+            )
+            session.merge(msg)
+            inserted += 1
+            if mid > new_last_id:
+                new_last_id = mid
 
     if inserted:
         node.last_id = new_last_id
         session.add(node)
         session.commit()
         log.info("Node %s: stored %s messages, last_id=%s", node.id, inserted, new_last_id)
-
-
-def coerce_int(value: object) -> Optional[int]:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
 
 
 if __name__ == "__main__":

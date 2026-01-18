@@ -1,14 +1,15 @@
 # Funpay Automation (Golden Key)
 
-Minimal FastAPI control panel scaffold that polls Funpay chat messages for configured node IDs using a Golden Key token, stores them in SQLite, and exposes simple REST endpoints.
+Minimal FastAPI control panel that mirrors the `funpayapi` approach (https://github.com/controlll/funpayapi): it logs in with your Golden Key cookie, polls the `runner/` endpoint for chat messages, stores them in SQLite, and exposes REST endpoints.
 
 ## What it does
-- Polls `GET <FUNPAY_MESSAGES_PATH>?node=<id>&since_id=<last_id>` on `FUNPAY_BASE_URL` with your Golden Key header.
-- Persists messages and last seen IDs per node in `data.db` (SQLite).
-- REST API:
+- Loads Funpay app data (`userId`, `csrf-token`) with your `golden_key` cookie.
+- Polls `/runner/` with `chat_node` objects for configured user IDs and parses returned message HTML.
+- Persists messages and last seen IDs per chat in `data.db`.
+- REST:
   - `GET /api/health`
   - `GET /api/nodes`
-  - `POST /api/nodes` `{ "node": 123 }`
+  - `POST /api/nodes` `{ "node": 123 }` (user IDs to watch)
   - `GET /api/messages?node=123&limit=50&offset=0`
 
 ## Quick start (local)
@@ -16,26 +17,21 @@ Minimal FastAPI control panel scaffold that polls Funpay chat messages for confi
 python -m venv .venv
 .venv\Scripts\activate             # on Windows
 pip install -r requirements.txt
-cp .env.example .env               # fill FUNPAY_GOLDEN_KEY and other values
+cp .env.example .env               # fill FUNPAY_GOLDEN_KEY
 uvicorn app:app --reload
 ```
-Open `http://localhost:8000/docs` to poke the API.
+Open `http://localhost:8000/docs`.
 
-## Configuration (`.env`)
-- `FUNPAY_GOLDEN_KEY` – your Golden Key (keep secret; do not commit).
+## Config (`.env`)
+- `FUNPAY_GOLDEN_KEY` – your Golden Key (secret).
 - `FUNPAY_BASE_URL` – default `https://funpay.com`.
-- `FUNPAY_MESSAGES_PATH` – messages endpoint path (inspect DevTools; default `/chat/messages`).
-- `FUNPAY_AUTH_HEADER` – header name to send the key (e.g., `Authorization` or `X-Access-Token`).
-- `FUNPAY_AUTH_PREFIX` – optional prefix (default `Bearer`, set empty to send raw key).
 - `FUNPAY_POLL_SECONDS` – poll interval seconds.
-- `FUNPAY_DEFAULT_NODES` – comma-separated node IDs to start polling on boot.
+- `FUNPAY_DEFAULT_NODES` – comma-separated *user IDs* to watch on startup.
 
-## Deployment (Railway)
-- Create a Railway service, set secrets from `.env.example` (especially `FUNPAY_GOLDEN_KEY`).
-- Start command: `uvicorn app:app --host 0.0.0.0 --port $PORT`.
-- Ensure `data.db` persistence if you need durable storage; otherwise it will reset on each deploy.
+## Railway
+- Set env vars above as Railway secrets; start command `uvicorn app:app --host 0.0.0.0 --port $PORT`.
+- Add a Volume or external DB if you need `data.db` persistence.
 
 ## Notes
-- Replace `FUNPAY_MESSAGES_PATH`/params to match the real Funpay chat API you see in your browser’s network tab.
-- Message IDs are treated as integers; if the API returns non-numeric IDs, adjust `coerce_int` and the schema.
-- The poller logs rate limits (429) and unauthorized (401) and will skip updates until fixed.
+- Uses the same runner payload shape as `funpayapi`. The first time a node is added, the poller fetches the current last message ID to avoid replaying history.
+- Message IDs are integers; adjust schema/parsing if Funpay changes formats.
