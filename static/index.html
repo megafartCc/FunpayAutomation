@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Funpay Control</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&display=swap');
+    :root {
+      --bg: #0f172a;
+      --panel: #111827;
+      --accent: #34d399;
+      --muted: #cbd5e1;
+      --text: #e2e8f0;
+      --danger: #ef4444;
+      --border: #1f2937;
+      --card: linear-gradient(135deg, rgba(52, 211, 153, 0.08), rgba(14, 165, 233, 0.08));
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Space Grotesk', system-ui, sans-serif;
+      background: radial-gradient(circle at 20% 20%, rgba(52, 211, 153, 0.08), transparent 35%),
+                  radial-gradient(circle at 80% 0%, rgba(14, 165, 233, 0.1), transparent 45%),
+                  var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    header {
+      padding: 20px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.7);
+      backdrop-filter: blur(10px);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    header h1 {
+      margin: 0;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+    .status {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      color: var(--muted);
+    }
+    .pill {
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(52, 211, 153, 0.15);
+      color: var(--accent);
+      border: 1px solid rgba(52, 211, 153, 0.25);
+      font-size: 12px;
+      letter-spacing: 0.02em;
+    }
+    .container {
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      gap: 18px;
+      padding: 18px 24px 32px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 15px 40px rgba(0, 0, 0, 0.3);
+    }
+    .card.accent {
+      background: var(--card);
+      border: 1px solid rgba(52, 211, 153, 0.18);
+    }
+    .card h2, .card h3 {
+      margin: 0 0 10px;
+      font-weight: 600;
+    }
+    label {
+      display: block;
+      margin: 10px 0 6px;
+      font-size: 14px;
+      color: var(--muted);
+    }
+    input, textarea, button {
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #0b1221;
+      color: var(--text);
+      padding: 10px 12px;
+      font: inherit;
+      transition: border 0.15s ease, transform 0.1s ease;
+    }
+    input:focus, textarea:focus {
+      outline: none;
+      border-color: rgba(52, 211, 153, 0.5);
+      box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.15);
+    }
+    button {
+      cursor: pointer;
+      background: linear-gradient(135deg, #34d399, #0ea5e9);
+      border: none;
+      color: #0b1221;
+      font-weight: 600;
+    }
+    button:hover { transform: translateY(-1px); }
+    button:active { transform: translateY(0); }
+    .list {
+      margin: 12px 0 0;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .list-item {
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.02);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .badge {
+      padding: 4px 8px;
+      border-radius: 8px;
+      background: rgba(255,255,255,0.05);
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .messages {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-height: 60vh;
+      overflow-y: auto;
+      padding-right: 6px;
+    }
+    .msg {
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.03);
+    }
+    .msg h4 {
+      margin: 0 0 6px;
+      font-size: 14px;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .msg p {
+      margin: 0;
+      white-space: pre-wrap;
+      line-height: 1.5;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: center;
+    }
+    .muted { color: var(--muted); }
+    @media (max-width: 960px) {
+      .container { grid-template-columns: 1fr; }
+      .messages { max-height: none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Funpay Control</h1>
+    <div class="status">
+      <span class="pill" id="status-pill">Checking…</span>
+      <span id="user-id" class="muted"></span>
+    </div>
+  </header>
+
+  <div class="container">
+    <div class="card accent">
+      <h2>Nodes</h2>
+      <label for="node-input">User ID to watch</label>
+      <div class="row">
+        <input id="node-input" type="text" placeholder="e.g. 123456" />
+        <button onclick="addNode()">Add</button>
+      </div>
+      <div class="list" id="nodes-list"></div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="align-items:flex-end;">
+        <div>
+          <h2 id="active-node-title">Messages</h2>
+          <div class="muted" id="last-refresh">Select a node to view messages.</div>
+        </div>
+        <button style="width:auto;" onclick="refreshMessages()">Refresh</button>
+      </div>
+      <div class="messages" id="messages"></div>
+      <div style="margin-top:12px;">
+        <label for="msg-input">Send message</label>
+        <div class="row">
+          <textarea id="msg-input" rows="2" placeholder="Write a reply..." style="resize: vertical;"></textarea>
+          <button style="width:auto; padding: 12px 16px;" onclick="sendMessage()">Send</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let activeNode = null;
+    let refreshTimer = null;
+
+    async function api(path, opts = {}) {
+      const res = await fetch(path, opts);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+
+    async function loadHealth() {
+      try {
+        const data = await api('/api/health');
+        document.getElementById('status-pill').textContent = data.polling ? 'Polling' : 'Idle';
+        document.getElementById('status-pill').style.background = data.polling ? 'rgba(52, 211, 153, 0.15)' : 'rgba(239, 68, 68, 0.12)';
+        document.getElementById('status-pill').style.color = data.polling ? 'var(--accent)' : 'var(--danger)';
+        document.getElementById('status-pill').style.border = data.polling ? '1px solid rgba(52, 211, 153, 0.25)' : '1px solid rgba(239, 68, 68, 0.25)';
+        document.getElementById('user-id').textContent = data.userId ? `Logged in as ${data.userId}` : 'No user';
+      } catch (e) {
+        document.getElementById('status-pill').textContent = 'Error';
+        document.getElementById('status-pill').style.background = 'rgba(239, 68, 68, 0.12)';
+        document.getElementById('status-pill').style.color = 'var(--danger)';
+        document.getElementById('status-pill').style.border = '1px solid rgba(239, 68, 68, 0.25)';
+      }
+    }
+
+    async function loadNodes() {
+      const list = document.getElementById('nodes-list');
+      list.innerHTML = '';
+      try {
+        const nodes = await api('/api/nodes');
+        if (!nodes.length) {
+          list.innerHTML = '<div class="muted">No nodes yet. Add a user ID to start.</div>';
+          return;
+        }
+        for (const n of nodes) {
+          const div = document.createElement('div');
+          div.className = 'list-item';
+          const btn = document.createElement('button');
+          btn.textContent = 'Open';
+          btn.style.width = 'auto';
+          btn.onclick = () => selectNode(n.id);
+          div.innerHTML = `<div><strong>${n.id}</strong><div class="badge">last ${n.last_id ?? 0}</div></div>`;
+          div.appendChild(btn);
+          list.appendChild(div);
+        }
+      } catch (e) {
+        list.innerHTML = '<div class="muted">Failed to load nodes.</div>';
+      }
+    }
+
+    async function addNode() {
+      const input = document.getElementById('node-input');
+      const node = input.value.trim();
+      if (!node) return;
+      try {
+        await api('/api/nodes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ node })
+        });
+        input.value = '';
+        await loadNodes();
+      } catch (e) {
+        alert('Failed to add node: ' + e.message);
+      }
+    }
+
+    async function selectNode(node) {
+      activeNode = node;
+      document.getElementById('active-node-title').textContent = `Messages · ${node}`;
+      await refreshMessages();
+      if (refreshTimer) clearInterval(refreshTimer);
+      refreshTimer = setInterval(refreshMessages, 4000);
+    }
+
+    async function refreshMessages() {
+      if (!activeNode) return;
+      const container = document.getElementById('messages');
+      container.innerHTML = '';
+      try {
+        const msgs = await api(`/api/messages?node=${encodeURIComponent(activeNode)}&limit=50`);
+        if (!msgs.length) {
+          container.innerHTML = '<div class="muted">No messages yet.</div>';
+        } else {
+          msgs.forEach(m => {
+            const div = document.createElement('div');
+            div.className = 'msg';
+            div.innerHTML = `
+              <h4><span>${m.username || 'Unknown'}</span><span class="muted">#${m.id}${m.created_at ? ' · ' + m.created_at : ''}</span></h4>
+              <p>${(m.body || '').replace(/</g,'&lt;')}</p>
+            `;
+            container.appendChild(div);
+          });
+        }
+        document.getElementById('last-refresh').textContent = `Updated ${new Date().toLocaleTimeString()}`;
+      } catch (e) {
+        container.innerHTML = '<div class="muted">Failed to load messages.</div>';
+      }
+    }
+
+    async function sendMessage() {
+      if (!activeNode) {
+        alert('Select a node first.');
+        return;
+      }
+      const textarea = document.getElementById('msg-input');
+      const message = textarea.value.trim();
+      if (!message) return;
+      try {
+        await api('/api/messages/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ node: activeNode, message })
+        });
+        textarea.value = '';
+        await refreshMessages();
+      } catch (e) {
+        alert('Failed to send: ' + e.message);
+      }
+    }
+
+    loadHealth();
+    loadNodes();
+  </script>
+</body>
+</html>

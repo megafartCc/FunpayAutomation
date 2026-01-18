@@ -12,6 +12,7 @@ import httpx
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Query
+from fastapi.staticfiles import StaticFiles
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 
 load_dotenv()
@@ -190,6 +191,7 @@ class FunpayClient:
         data = {
             "objects": json.dumps(objects, ensure_ascii=False),
             "request": json.dumps(request, ensure_ascii=False) if request is not None else "false",
+            "csrf_token": self.csrf_token or "",
         }
         headers = {
             "accept": "application/json, text/javascript, */*; q=0.01",
@@ -208,6 +210,33 @@ class FunpayClient:
     def _capture_cookies(self, resp: httpx.Response):
         # httpx client keeps cookies automatically; nothing to do unless golden_key missing.
         pass
+
+    async def send_chat_message(self, other_user_id: str, content: str, last_message: Optional[int] = None):
+        await self.ensure_ready()
+        chat_node = get_users_node(self.user_id, other_user_id)
+
+        if last_message is None:
+            try:
+                last_message = await self.get_user_last_message(other_user_id)
+            except Exception:
+                last_message = 0
+        last_message = int(last_message or 0)
+
+        objects = [
+            {"type": "orders_counters", "id": self.user_id, "tag": "py", "data": True},
+            {"type": "chat_counter", "id": self.user_id, "tag": "py", "data": True},
+            {
+                "type": "chat_node",
+                "id": chat_node,
+                "data": {"node": chat_node, "last_message": last_message, "content": ""},
+            },
+        ]
+        request = {
+            "action": "chat_message",
+            "data": {"node": chat_node, "last_message": last_message + 1, "content": content},
+        }
+        payload = await self.runner(objects, request=request)
+        return payload
 
 
 def extract_app_data(html: str) -> dict:
@@ -277,6 +306,36 @@ def add_node(payload: NodeCreate, session: Session = Depends(get_session)):
     return {"status": "ok", "node": node_id}
 
 
+class SendMessage(SQLModel):
+    node: str
+    message: str
+
+
+@app.post("/api/messages/send")
+async def send_message(payload: SendMessage, session: Session = Depends(get_session)):
+    node_id = str(payload.node)
+    msg = payload.message.strip()
+    if not msg:
+        return {"status": "error", "error": "Empty message"}
+
+    record = session.get(Node, node_id)
+    if not record:
+        record = Node(id=node_id, last_id=0)
+        session.add(record)
+        session.commit()
+
+    client: FunpayClient = app.state.fp_client
+    try:
+        await client.send_chat_message(node_id, msg, last_message=record.last_id or 0)
+        record.last_id = (record.last_id or 0) + 1
+        session.add(record)
+        session.commit()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return {"status": "ok", "node": node_id}
+
+
 @app.get("/api/messages")
 def list_messages(
     node: str = Query(..., description="User ID of the chat partner"),
@@ -292,6 +351,10 @@ def list_messages(
         .limit(limit)
     )
     return session.exec(stmt).all()
+
+
+# -------- Static --------
+app.mount("/", StaticFiles(directory="static", html=True), name="static")
 
 
 # -------- Poller --------

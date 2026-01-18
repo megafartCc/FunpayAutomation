@@ -1,6 +1,6 @@
 # Funpay Automation (Golden Key)
 
-Minimal FastAPI control panel that mirrors the `funpayapi` approach (https://github.com/controlll/funpayapi): it logs in with your Golden Key cookie, polls the `runner/` endpoint for chat messages, stores them in SQLite, and exposes REST endpoints.
+Minimal FastAPI control panel with a built-in web UI. It mirrors the `funpayapi` approach (https://github.com/controlll/funpayapi): logs in with your Golden Key cookie, polls the `runner/` endpoint for chat messages, stores them in SQLite, and exposes REST + a UI.
 
 ## What it does
 - Loads Funpay app data (`userId`, `csrf-token`) with your `golden_key` cookie.
@@ -11,6 +11,8 @@ Minimal FastAPI control panel that mirrors the `funpayapi` approach (https://git
   - `GET /api/nodes`
   - `POST /api/nodes` `{ "node": 123 }` (user IDs to watch)
   - `GET /api/messages?node=123&limit=50&offset=0`
+  - `POST /api/messages/send` `{ "node": 123, "message": "hi" }`
+- Web UI: served at `/` from `static/index.html` (add nodes, view messages, send replies).
 
 ## Quick start (local)
 ```bash
