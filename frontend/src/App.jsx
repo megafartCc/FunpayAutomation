@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { motion } from 'framer-motion'
 import './index.css'
 
 const api = async (path, options = {}) => {
@@ -51,7 +52,7 @@ export default function App() {
 
   useEffect(() => {
     if (!activeNode) return
-    let timer = setInterval(() => refreshMessages(activeNode, false), 4000)
+    const timer = setInterval(() => refreshMessages(activeNode, false), 4000)
     return () => clearInterval(timer)
   }, [activeNode])
 
@@ -67,7 +68,7 @@ export default function App() {
 
   const startSession = async () => {
     if (!keyInput.trim()) {
-      setError('Enter a Golden Key')
+      setError('Введите Golden Key')
       return
     }
     setBusy(true)
@@ -164,7 +165,7 @@ export default function App() {
   }
 
   return (
-    <div className="page">
+    <div className="page dark">
       <header className="topbar">
         <div>
           <h1 className="brand">FunPay Panel</h1>
@@ -175,10 +176,13 @@ export default function App() {
 
       <div className="layout">
         <aside className="sidebar">
-          <section className="panel flat">
+          <motion.section className="panel flat" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
             <div className="panel-header">
-              <h2>Сессия</h2>
-              <p className="sub">Ключ хранится только в памяти сессии.</p>
+              <div>
+                <h2>Сессия</h2>
+                <p className="sub">Ключ хранится только в памяти.</p>
+              </div>
+              <div className="pill muted small">funpay.com</div>
             </div>
             <label>Golden Key</label>
             <input
@@ -190,12 +194,15 @@ export default function App() {
               {busy ? 'Запуск…' : 'Запустить'}
             </button>
             {error && <div className="alert">{error}</div>}
-          </section>
+          </motion.section>
 
-          <section className="panel flat">
+          <motion.section className="panel flat" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
             <div className="panel-header">
-              <h2>Диалоги</h2>
-              <div className="sub">Добавьте ID пользователя.</div>
+              <div>
+                <h2>Диалоги</h2>
+                <div className="sub">Добавьте пользователя.</div>
+              </div>
+              <span className="pill muted small">{nodes.length}</span>
             </div>
             <div className="row">
               <input
@@ -205,7 +212,7 @@ export default function App() {
               />
               <button onClick={addNode}>Добавить</button>
             </div>
-            <div className="contact-list">
+            <div className="contact-list tall">
               {nodes.length === 0 && <div className="muted">Нет диалогов.</div>}
               {nodes.map((n) => (
                 <div
@@ -213,16 +220,18 @@ export default function App() {
                   className={`contact-item ${activeNode === n.id ? 'active' : ''}`}
                   onClick={() => selectNode(n.id)}
                 >
-                  <div className="contact-title">{n.id}</div>
-                  <div className="contact-meta">last {n.last_id ?? 0}</div>
+                  <div className="contact-title">{n.last_username || n.id}</div>
+                  <div className="contact-meta">
+                    {n.last_body ? n.last_body.slice(0, 60) : `#${n.id}`} · {n.last_created_at || '—'}
+                  </div>
                 </div>
               ))}
             </div>
-          </section>
+          </motion.section>
         </aside>
 
-        <main className="main">
-          <section className="panel chat-panel">
+        <main className="main wide">
+          <motion.section className="panel chat-panel" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
             <div className="panel-header">
               <div>
                 <h2>Сообщения {activeNode ? `· ${activeNode}` : ''}</h2>
@@ -256,9 +265,9 @@ export default function App() {
                 Отправить
               </button>
             </div>
-          </section>
+          </motion.section>
 
-          <section className="panel lots-panel">
+          <motion.section className="panel lots-panel" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
             <div className="panel-header">
               <div>
                 <h2>Лоты</h2>
@@ -291,7 +300,7 @@ export default function App() {
                 </div>
               ))}
             </div>
-          </section>
+          </motion.section>
         </main>
       </div>
     </div>
@@ -310,9 +319,9 @@ function LotRow({ groupNode, offer, onUpdate }) {
         <input
           value={price}
           onChange={(e) => setPrice(e.target.value)}
-          style={{ minWidth: 80 }}
+          style={{ minWidth: 90 }}
         />
-        <button onClick={() => onUpdate(groupNode, offer.id, price)}>Save</button>
+        <button onClick={() => onUpdate(groupNode, offer.id, price)}>Сохранить</button>
       </div>
     </div>
   )

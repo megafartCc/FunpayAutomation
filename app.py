@@ -420,7 +420,23 @@ async def session_create(payload: SessionCreate):
 @app.get("/api/nodes")
 def list_nodes(session: Session = Depends(get_session)):
     nodes = session.exec(select(Node)).all()
-    return nodes
+    result = []
+    for n in nodes:
+        last_msg = (
+            session.exec(
+                select(Message).where(Message.node_id == n.id).order_by(Message.id.desc()).limit(1)
+            ).first()
+        )
+        result.append(
+            {
+                "id": n.id,
+                "last_id": n.last_id,
+                "last_username": getattr(last_msg, "username", None),
+                "last_body": getattr(last_msg, "body", None),
+                "last_created_at": getattr(last_msg, "created_at", None),
+            }
+        )
+    return result
 
 
 class NodeCreate(SQLModel):
