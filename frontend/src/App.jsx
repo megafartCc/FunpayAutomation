@@ -40,9 +40,9 @@ export default function App() {
   const [error, setError] = useState('')
 
   const statusLabel = useMemo(() => {
-    if (error) return { text: 'Ошибка', tone: 'danger' }
-    if (session.polling) return { text: `В сети · ${session.userId || ''}`, tone: 'success' }
-    return { text: 'Ожидание', tone: 'muted' }
+    if (error) return { text: 'Error', tone: 'danger' }
+    if (session.polling) return { text: `Active · ${session.userId || ''}`, tone: 'success' }
+    return { text: 'Idle', tone: 'muted' }
   }, [session, error])
 
   useEffect(() => {
@@ -68,7 +68,7 @@ export default function App() {
 
   const startSession = async () => {
     if (!keyInput.trim()) {
-      setError('Введите Golden Key')
+      setError('Enter Golden Key')
       return
     }
     setBusy(true)
@@ -169,7 +169,7 @@ export default function App() {
       <header className="topbar">
         <div>
           <h1 className="brand">FunPay Panel</h1>
-          <p className="sub">Сообщения и лоты</p>
+          <p className="sub">Chats and lots</p>
         </div>
         <div className={`pill ${statusLabel.tone}`}>{statusLabel.text}</div>
       </header>
@@ -179,8 +179,8 @@ export default function App() {
           <motion.section className="panel flat" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
             <div className="panel-header">
               <div>
-                <h2>Сессия</h2>
-                <p className="sub">Ключ хранится только в памяти.</p>
+                <h2>Session</h2>
+                <p className="sub">Key is stored only in memory.</p>
               </div>
               <div className="pill muted small">funpay.com</div>
             </div>
@@ -188,10 +188,10 @@ export default function App() {
             <input
               value={keyInput}
               onChange={(e) => setKeyInput(e.target.value)}
-              placeholder="Вставьте golden_key cookie"
+              placeholder="Paste golden_key cookie"
             />
             <button onClick={startSession} disabled={busy}>
-              {busy ? 'Запуск…' : 'Запустить'}
+              {busy ? 'Starting…' : 'Start'}
             </button>
             {error && <div className="alert">{error}</div>}
           </motion.section>
@@ -199,8 +199,8 @@ export default function App() {
           <motion.section className="panel flat" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
             <div className="panel-header">
               <div>
-                <h2>Диалоги</h2>
-                <div className="sub">Добавьте пользователя.</div>
+                <h2>Dialogs</h2>
+                <div className="sub">Add user IDs.</div>
               </div>
               <span className="pill muted small">{nodes.length}</span>
             </div>
@@ -210,10 +210,10 @@ export default function App() {
                 onChange={(e) => setNewNode(e.target.value)}
                 placeholder="User ID"
               />
-              <button onClick={addNode}>Добавить</button>
+              <button onClick={addNode}>Add</button>
             </div>
             <div className="contact-list tall">
-              {nodes.length === 0 && <div className="muted">Нет диалогов.</div>}
+              {nodes.length === 0 && <div className="muted">No dialogs yet.</div>}
               {nodes.map((n) => (
                 <div
                   key={n.id}
@@ -234,15 +234,15 @@ export default function App() {
           <motion.section className="panel chat-panel" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
             <div className="panel-header">
               <div>
-                <h2>Сообщения {activeNode ? `· ${activeNode}` : ''}</h2>
-                <div className="sub">{loadingMsgs ? 'Загрузка…' : 'Автообновление каждые 4с'}</div>
+                <h2>Messages {activeNode ? `· ${activeNode}` : ''}</h2>
+                <div className="sub">{loadingMsgs ? 'Loading…' : 'Auto-refresh every 4s'}</div>
               </div>
-              <button onClick={() => activeNode && refreshMessages(activeNode, true)}>Обновить</button>
+              <button onClick={() => activeNode && refreshMessages(activeNode, true)}>Refresh</button>
             </div>
             <div className="messages">
-              {!activeNode && <div className="muted">Выберите диалог слева.</div>}
+              {!activeNode && <div className="muted">Select a dialog on the left.</div>}
               {activeNode && messages.length === 0 && !loadingMsgs && (
-                <div className="muted">Нет сообщений.</div>
+                <div className="muted">No messages yet.</div>
               )}
               {messages.map((m) => (
                 <article key={m.id} className="msg">
@@ -259,10 +259,10 @@ export default function App() {
                 value={messageText}
                 onChange={(e) => setMessageText(e.target.value)}
                 rows={2}
-                placeholder="Написать..."
+                placeholder="Write a reply..."
               />
               <button onClick={sendMessage} disabled={!activeNode}>
-                Отправить
+                Send
               </button>
             </div>
           </motion.section>
@@ -270,16 +270,16 @@ export default function App() {
           <motion.section className="panel lots-panel" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
             <div className="panel-header">
               <div>
-                <h2>Лоты</h2>
-                <div className="sub">Ваши предложения, цены.</div>
+                <h2>Lots</h2>
+                <div className="sub">Your offers and prices.</div>
               </div>
               <button onClick={loadLots} disabled={loadingLots}>
-                {loadingLots ? 'Загрузка…' : 'Обновить'}
+                {loadingLots ? 'Loading…' : 'Refresh'}
               </button>
             </div>
             <div className="lots">
               {lots.length === 0 && !loadingLots && (
-                <div className="muted">Пока пусто. Нажмите «Обновить».</div>
+                <div className="muted">Empty. Click “Refresh”.</div>
               )}
               {lots.map((group) => (
                 <div key={group.node} className="lot-group">
@@ -321,7 +321,7 @@ function LotRow({ groupNode, offer, onUpdate }) {
           onChange={(e) => setPrice(e.target.value)}
           style={{ minWidth: 90 }}
         />
-        <button onClick={() => onUpdate(groupNode, offer.id, price)}>Сохранить</button>
+        <button onClick={() => onUpdate(groupNode, offer.id, price)}>Save</button>
       </div>
     </div>
   )
