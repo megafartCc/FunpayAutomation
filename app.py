@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 import httpx
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 
@@ -25,10 +25,10 @@ logging.basicConfig(
 # -------- Settings --------
 @dataclass
 class Settings:
-    golden_key: Optional[str]
     base_url: str
     poll_seconds: float
     default_nodes: list[str]
+    initial_key: Optional[str]
 
     @classmethod
     def load(cls) -> "Settings":
@@ -41,15 +41,15 @@ class Settings:
             if part:
                 default_nodes.append(part)
 
-        golden_key = os.getenv("FUNPAY_GOLDEN_KEY")
-        if not golden_key:
-            logging.warning("FUNPAY_GOLDEN_KEY not set; poller will stay idle until provided.")
+        initial_key = os.getenv("FUNPAY_GOLDEN_KEY")
+        if initial_key:
+            logging.info("Initial FUNPAY_GOLDEN_KEY found; will start session automatically.")
 
         return cls(
-            golden_key=golden_key,
             base_url=base_url,
             poll_seconds=poll_seconds,
             default_nodes=default_nodes,
+            initial_key=initial_key,
         )
 
 
@@ -115,6 +115,32 @@ def init_db() -> None:
                 if not session.get(Node, node_id):
                     session.add(Node(id=node_id))
             session.commit()
+
+
+async def start_session(golden_key: str, base_url: Optional[str] = None):
+    base = (base_url or settings.base_url).rstrip("/")
+    settings.base_url = base
+    # stop existing poller
+    poller_task = getattr(app.state, "poller_task", None)
+    if poller_task:
+        poller_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await poller_task
+    stop_event = asyncio.Event()
+    app.state.stop_event = stop_event
+
+    # close previous client if any
+    prev_client: Optional[FunpayClient] = getattr(app.state, "fp_client", None)
+    if prev_client:
+        with contextlib.suppress(Exception):
+            await prev_client.close()
+
+    client = FunpayClient(base, golden_key)
+    app.state.fp_client = client
+    await client.start()
+    app.state.poller_task = asyncio.create_task(poller())
+    logging.info("Session started for user %s", client.user_id)
+    return client
 
 
 def get_session():
@@ -238,6 +264,81 @@ class FunpayClient:
         payload = await self.runner(objects, request=request)
         return payload
 
+    async def get_offers(self) -> list[dict]:
+        await self.ensure_ready()
+        resp = await self.client.get(f"/users/{self.user_id}/")
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        result: list[dict] = []
+        for offer_block in soup.select(".mb20 .offer"):
+            title = offer_block.select_one(".offer-list-title h3 a")
+            if not title:
+                continue
+            group_name = title.get_text(strip=True)
+            href = title.get("href", "")
+            node = href.strip("/").split("/")[-1] if href else None
+            if not node:
+                continue
+            group = {"group_name": group_name, "node": node, "offers": []}
+            for item in offer_block.select(".tc-item"):
+                name_el = item.select_one(".tc-desc-text")
+                price_el = item.select_one(".tc-price")
+                href_item = item.get("href") or ""
+                offer_id = None
+                if "id=" in href_item:
+                    try:
+                        offer_id = href_item.split("id=")[1].split("&")[0]
+                    except Exception:
+                        offer_id = None
+                group["offers"].append(
+                    {
+                        "name": name_el.get_text(strip=True) if name_el else "",
+                        "price": price_el.get_text(strip=True) if price_el else "",
+                        "id": offer_id,
+                    }
+                )
+            result.append(group)
+        return result
+
+    async def update_price(self, node: str, offer: str, price: float):
+        await self.ensure_ready()
+        route = f"/lots/offerEdit?node={node}&offer={offer}"
+        resp = await self.client.get(route)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        form = soup.select_one(".form-offer-editor")
+        if not form:
+            raise RuntimeError("Offer form not found.")
+        price = float(price)
+
+        data: dict[str, str] = {}
+        for field in form.select("input, textarea, select"):
+            name = field.get("name")
+            if not name:
+                continue
+            tag = field.name
+            if tag == "select":
+                selected = field.select_one("option[selected]") or field.select_one("option")
+                if selected:
+                    data[name] = selected.get("value", "")
+            elif field.get("type") in ["checkbox", "radio"]:
+                if field.has_attr("checked"):
+                    data[name] = field.get("value", "on")
+            else:
+                data[name] = field.get("value", "")
+
+        data["price"] = str(price)
+        if self.csrf_token:
+            data["csrf_token"] = self.csrf_token
+        headers = {
+            "accept": "application/json, text/javascript, */*; q=0.01",
+            "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "x-requested-with": "XMLHttpRequest",
+        }
+        save = await self.client.post("/lots/offerSave", data=data, headers=headers)
+        save.raise_for_status()
+        return True
+
 
 def extract_app_data(html: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
@@ -258,12 +359,10 @@ app = FastAPI(title="Funpay Automation", version="0.2.0")
 async def on_startup():
     init_db()
     app.state.stop_event = asyncio.Event()
-    app.state.fp_client = FunpayClient(settings.base_url, settings.golden_key or "")
-    if settings.golden_key:
-        await app.state.fp_client.start()
-        app.state.poller_task = asyncio.create_task(poller())
-    else:
-        app.state.poller_task = None
+    app.state.fp_client: Optional[FunpayClient] = None
+    app.state.poller_task = None
+    if settings.initial_key:
+        await start_session(settings.initial_key, settings.base_url)
 
 
 @app.on_event("shutdown")
@@ -275,14 +374,49 @@ async def on_shutdown():
         with contextlib.suppress(asyncio.CancelledError):
             await poller_task
     client: FunpayClient = app.state.fp_client
-    await client.close()
+    if client:
+        await client.close()
 
 
 # -------- API routes --------
 @app.get("/api/health")
 async def health():
-    client: FunpayClient = app.state.fp_client
-    return {"status": "ok", "polling": bool(settings.golden_key), "userId": client.user_id}
+    client: Optional[FunpayClient] = getattr(app.state, "fp_client", None)
+    return {
+        "status": "ok",
+        "polling": bool(client),
+        "userId": getattr(client, "user_id", None),
+    }
+
+
+@dataclass
+class SessionStatus:
+    polling: bool
+    userId: Optional[str]
+    baseUrl: str
+
+
+class SessionCreate(SQLModel):
+    golden_key: str
+    base_url: Optional[str] = None
+
+
+@app.get("/api/session")
+async def session_status():
+    client: Optional[FunpayClient] = getattr(app.state, "fp_client", None)
+    return SessionStatus(
+        polling=bool(client),
+        userId=getattr(client, "user_id", None),
+        baseUrl=settings.base_url,
+    ).__dict__
+
+
+@app.post("/api/session")
+async def session_create(payload: SessionCreate):
+    if not payload.golden_key.strip():
+        raise HTTPException(status_code=400, detail="Golden Key is required.")
+    client = await start_session(payload.golden_key.strip(), payload.base_url)
+    return {"status": "ok", "userId": client.user_id, "baseUrl": client.base_url}
 
 
 @app.get("/api/nodes")
@@ -311,6 +445,12 @@ class SendMessage(SQLModel):
     message: str
 
 
+class UpdatePrice(SQLModel):
+    node: str
+    offer: str
+    price: float
+
+
 @app.post("/api/messages/send")
 async def send_message(payload: SendMessage, session: Session = Depends(get_session)):
     node_id = str(payload.node)
@@ -324,7 +464,9 @@ async def send_message(payload: SendMessage, session: Session = Depends(get_sess
         session.add(record)
         session.commit()
 
-    client: FunpayClient = app.state.fp_client
+    client: Optional[FunpayClient] = getattr(app.state, "fp_client", None)
+    if not client:
+        raise HTTPException(status_code=400, detail="No active session. Set Golden Key first.")
     try:
         await client.send_chat_message(node_id, msg, last_message=record.last_id or 0)
         record.last_id = (record.last_id or 0) + 1
@@ -353,16 +495,37 @@ def list_messages(
     return session.exec(stmt).all()
 
 
+@app.get("/api/lots")
+async def list_lots():
+    client: Optional[FunpayClient] = getattr(app.state, "fp_client", None)
+    if not client:
+        raise HTTPException(status_code=400, detail="No active session. Set Golden Key first.")
+    offers = await client.get_offers()
+    return offers
+
+
+@app.post("/api/lots/price")
+async def update_lot_price(payload: UpdatePrice):
+    client: Optional[FunpayClient] = getattr(app.state, "fp_client", None)
+    if not client:
+        raise HTTPException(status_code=400, detail="No active session. Set Golden Key first.")
+    try:
+        await client.update_price(payload.node, payload.offer, payload.price)
+        return {"status": "ok"}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 # -------- Static --------
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
 
 
 # -------- Poller --------
 async def poller():
-    if not settings.golden_key:
+    client: Optional[FunpayClient] = getattr(app.state, "fp_client", None)
+    if not client:
         return
 
-    client: FunpayClient = app.state.fp_client
     stop_event: asyncio.Event = app.state.stop_event
     log = logging.getLogger("poller")
 
@@ -370,9 +533,12 @@ async def poller():
         start = time.time()
         try:
             with Session(engine) as session:
+                current_client: Optional[FunpayClient] = getattr(app.state, "fp_client", None)
+                if not current_client:
+                    break
                 nodes = session.exec(select(Node)).all()
                 for node in nodes:
-                    await poll_node(session, client, log, node)
+                    await poll_node(session, current_client, log, node)
         except Exception as exc:
             log.exception("Poller failure: %s", exc)
         elapsed = time.time() - start
@@ -413,7 +579,7 @@ async def poll_node(session: Session, client: FunpayClient, log: logging.Logger,
             log.warning("Node %s rate limited; backing off", node.id)
             await asyncio.sleep(5)
         elif status == 401:
-            log.error("Unauthorized (401) for node %s. Check FUNPAY_GOLDEN_KEY.", node.id)
+            log.error("Unauthorized (401) for node %s. Check Golden Key/session.", node.id)
         else:
             log.warning("Node %s HTTP error %s: %s", node.id, status, exc)
         return
