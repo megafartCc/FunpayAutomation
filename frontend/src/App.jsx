@@ -125,8 +125,8 @@ export default function App() {
     if (!nodeId) return
     setLoadingMsgs(withLoading)
     try {
-      const msgs = await api(`/api/messages?node=${encodeURIComponent(nodeId)}&limit=100`)
-      setMessages(msgs)
+      const msgs = await api(`/api/messages?node=${encodeURIComponent(nodeId)}&limit=200`)
+      setMessages(Array.isArray(msgs) ? msgs.slice().reverse() : [])
     } catch (e) {
       setError(e.message)
     } finally {
@@ -271,7 +271,7 @@ export default function App() {
                 ))}
               </Stack>
             </ScrollArea>
-            <Group align="flex-end" mt="sm" wrap="nowrap">
+            <Group align="stretch" mt="sm" wrap="nowrap">
               <Textarea
                 value={messageText}
                 onChange={(e) => setMessageText(e.target.value)}
@@ -287,7 +287,7 @@ export default function App() {
                 maxRows={4}
                 style={{ flex: 1 }}
               />
-              <Button onClick={sendMessage} disabled={!activeNode}>
+              <Button onClick={sendMessage} disabled={!activeNode} style={{ alignSelf: 'stretch' }}>
                 Send
               </Button>
             </Group>
