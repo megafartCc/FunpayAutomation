@@ -22,6 +22,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 from steam.client import SteamClient as BaseSteamClient
 from steam.enums import EResult
+from steam.webauth import WebAuth
 from eventemitter import EventEmitter
 
 load_dotenv()
@@ -1378,15 +1379,60 @@ async def change_steam_password_endpoint(account_id: int, payload: ChangePasswor
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters long.")
     
     try:
-        # Use the Steam web session to change password
-        # This is similar to the method in main.py
-        if not hasattr(client, "web_session"):
-            raise HTTPException(status_code=500, detail="Steam client does not have web session available.")
+        # Try to use SteamClient's web_session if available
+        web_session = None
+        if hasattr(client, "web_session") and client.web_session:
+            web_session = client.web_session
+        else:
+            # Create a new WebAuth session for password change
+            # We need to log in via WebAuth to get a web session
+            logging.info("SteamClient doesn't have web_session, creating WebAuth session for account %s", account_id)
+            
+            # Generate 2FA code if available
+            two_factor_code = None
+            if account.twofa_otp:
+                try:
+                    import base64
+                    import hmac
+                    import hashlib
+                    import struct
+                    secret_bytes = base64.b64decode(account.twofa_otp)
+                    timestamp = int(time.time()) // 30
+                    msg = struct.pack(">Q", timestamp)
+                    hmac_hash = hmac.new(secret_bytes, msg, hashlib.sha1).digest()
+                    offset = hmac_hash[-1] & 0x0F
+                    code_int = int.from_bytes(hmac_hash[offset:offset + 4], "big") & 0x7FFFFFFF
+                    alphabet = "23456789BCDFGHJKMNPQRTVWXY"
+                    two_factor_code = ""
+                    for _ in range(5):
+                        two_factor_code += alphabet[code_int % len(alphabet)]
+                        code_int //= len(alphabet)
+                except Exception as e:
+                    logging.warning("Failed to generate 2FA code for password change: %s", e)
+            
+            # Create WebAuth session (run in executor since it's synchronous)
+            def _create_webauth_session():
+                wa = WebAuth(account.username)
+                return wa.login(
+                    password=account.password,
+                    twofactor_code=two_factor_code
+                )
+            
+            try:
+                web_session = await asyncio.to_thread(_create_webauth_session)
+            except Exception as e:
+                logging.exception("WebAuth login failed for password change: %s", e)
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to create web session for password change. Please ensure the account is properly logged in."
+                )
         
-        sessionid = client.web_session.cookies.get('sessionid', domain='steamcommunity.com')
-        if not sessionid:
-            # Try to get sessionid from store domain
-            sessionid = client.web_session.cookies.get('sessionid', domain='store.steampowered.com')
+        # Get sessionid from the web session
+        sessionid = None
+        if hasattr(web_session, 'cookies'):
+            sessionid = web_session.cookies.get('sessionid', domain='steamcommunity.com')
+            if not sessionid:
+                sessionid = web_session.cookies.get('sessionid', domain='store.steampowered.com')
         
         if not sessionid:
             raise HTTPException(status_code=500, detail="Could not get Steam session ID. Please log in again.")
@@ -1398,11 +1444,15 @@ async def change_steam_password_endpoint(account_id: int, payload: ChangePasswor
             'renewpassword': new_password
         }
         
-        response = client.web_session.post(
-            'https://store.steampowered.com/account/changepassword_finish',
-            data=form_data,
-            headers={'Referer': 'https://store.steampowered.com/account/changepassword'}
-        )
+        # Run the POST request in executor since web_session.post() is synchronous
+        def _change_password_request():
+            return web_session.post(
+                'https://store.steampowered.com/account/changepassword_finish',
+                data=form_data,
+                headers={'Referer': 'https://store.steampowered.com/account/changepassword'}
+            )
+        
+        response = await asyncio.to_thread(_change_password_request)
         
         if 'successfully changed' in response.text.lower():
             # Update password in database
@@ -1414,7 +1464,17 @@ async def change_steam_password_endpoint(account_id: int, payload: ChangePasswor
             logging.info("Password changed successfully for account %s", account_id)
             return {"status": "ok", "message": "Password changed successfully."}
         else:
-            raise HTTPException(status_code=400, detail="Password change failed. Check your current password or try again.")
+            # Try to extract error message from response
+            error_msg = "Password change failed. Check your current password or try again."
+            try:
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(response.text, 'html.parser')
+                error_div = soup.find('div', class_='error_message')
+                if error_div:
+                    error_msg = error_div.get_text(strip=True)
+            except:
+                pass
+            raise HTTPException(status_code=400, detail=error_msg)
             
     except HTTPException:
         raise
