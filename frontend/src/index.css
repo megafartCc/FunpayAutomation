@@ -1,5 +1,5 @@
 :root {
-  background: #20252b;
+  background: #15181c;
 }
 
 * {
@@ -11,5 +11,5 @@ body,
 #root {
   height: 100%;
   margin: 0;
-  background: #20252b;
+  background: #15181c;
 }

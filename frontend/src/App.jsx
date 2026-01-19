@@ -48,8 +48,6 @@ export default function App() {
   const [error, setError] = useState('')
 
   const isNarrow = useMediaQuery('(max-width: 900px)')
-  const headerHeight = 70
-
   const statusLabel = useMemo(() => {
     if (error) return { text: 'Error', tone: 'danger' }
     if (session.polling) {
@@ -159,22 +157,15 @@ export default function App() {
 
   return (
     <AppShell
-      header={{ height: headerHeight }}
       padding="md"
       style={{ height: '100dvh' }}
       styles={{
         main: {
-          background: '#20252b',
-          height: `calc(100dvh - ${headerHeight}px)`,
+          background: '#15181c',
+          height: '100dvh',
         },
       }}
     >
-      <AppShell.Header>
-        <Group justify="center" h="100%">
-          <img src="/logo-funpay.svg" alt="FunPay" style={{ width: 190, height: 'auto' }} />
-        </Group>
-      </AppShell.Header>
-
       <AppShell.Main>
         <Box
           style={{
