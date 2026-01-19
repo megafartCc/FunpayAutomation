@@ -2669,8 +2669,6 @@ async def change_steam_password_endpoint(account_id: int, payload: ChangePasswor
     except Exception as exc:
         logging.exception("Failed to change password for account %s", account_id)
         raise HTTPException(status_code=500, detail=f"Failed to change password: {str(exc)}")
-                    sess = client.get_web_session()
-                    logging.info("get_web_session() returned: %s (type: %s)", sess, type(sess) if sess else None)
                     if sess is None:
                         # Try to get web session cookies directly as fallback
                         if hasattr(client, "get_web_session_cookies"):
