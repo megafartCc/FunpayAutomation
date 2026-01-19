@@ -14,16 +14,5 @@ requests
 APScheduler
 mysql-connector-python
 
-# Steam library - use [client] extras for full EventEmitter support
-steam[client]==1.4.4
-eventemitter==0.2.0
-gevent==24.2.1
-protobuf==3.20.3
-
 # Production server
 gunicorn
-
-# Selenium for browser automation (like AUTO-STEAM-RENT)
-selenium==4.15.2
-webdriver-manager==4.0.1
-# Selenium is required for AUTO-STEAM-RENT style password changes and deauthorization
