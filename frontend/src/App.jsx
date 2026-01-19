@@ -230,12 +230,10 @@ export default function App() {
             display: 'grid',
             gridTemplateColumns: isNarrow
               ? '1fr'
-              : isWide
-                ? '280px minmax(700px, 1fr) minmax(520px, 640px)'
-                : '280px minmax(700px, 1fr) minmax(240px, 320px)',
+              : '280px minmax(700px, 1fr) minmax(560px, 720px)',
             gridTemplateRows: isNarrow ? 'minmax(0, 1fr) minmax(0, 1fr)' : '1fr',
             gap: 16,
-            maxWidth: isWide ? 1800 : 1400,
+            maxWidth: isWide ? 1800 : 1600,
             margin: '0 auto',
           }}
         >
@@ -372,7 +370,7 @@ export default function App() {
             <Box
               style={{
                 display: 'grid',
-                gridTemplateColumns: isWide ? 'minmax(260px, 1fr) minmax(240px, 1fr)' : '1fr',
+                gridTemplateColumns: 'minmax(260px, 1fr) minmax(260px, 1fr)',
                 gap: 16,
                 minHeight: 0,
               }}
