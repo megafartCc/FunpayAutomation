@@ -91,12 +91,12 @@ export default function App() {
     }
   }
 
-  const syncMessages = async (nodeId, chatNode) => {
+  const syncMessages = async (nodeId, chatNode, limit = 150) => {
     if (!nodeId && !chatNode) return null
     try {
       const data = await api('/api/messages/sync', {
         method: 'POST',
-        body: JSON.stringify({ node: nodeId || null, chat_node: chatNode || null }),
+        body: JSON.stringify({ node: nodeId || null, chat_node: chatNode || null, limit }),
       })
       return data
     } catch (e) {
@@ -112,10 +112,8 @@ export default function App() {
     setActiveNode(dialog.user_id || null)
 
     let resolvedUserId = dialog.user_id
-    if (!resolvedUserId) {
-      const sync = await syncMessages(null, dialog.node_id)
-      resolvedUserId = sync?.user_id || null
-    }
+    const sync = await syncMessages(resolvedUserId, dialog.node_id, 150)
+    resolvedUserId = sync?.user_id || resolvedUserId || null
     if (!resolvedUserId) {
       setLoadingMsgs(false)
       return
@@ -128,7 +126,7 @@ export default function App() {
     if (!nodeId) return
     setLoadingMsgs(withLoading)
     try {
-      const msgs = await api(`/api/messages?node=${encodeURIComponent(nodeId)}&limit=200`)
+      const msgs = await api(`/api/messages?node=${encodeURIComponent(nodeId)}&limit=150`)
       setMessages(Array.isArray(msgs) ? msgs.slice().reverse() : [])
     } catch (e) {
       setError(e.message)

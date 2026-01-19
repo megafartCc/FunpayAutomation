@@ -156,6 +156,8 @@ class FunpayClient:
         self.client: Optional[httpx.AsyncClient] = None
         self.user_id: Optional[str] = None
         self.csrf_token: Optional[str] = None
+        self.dialog_backoff_until = 0.0
+        self.chat_backoff_until = 0.0
 
     async def start(self):
         self.client = httpx.AsyncClient(
@@ -195,9 +197,17 @@ class FunpayClient:
 
     async def get_user_last_message(self, other_user_id: str) -> Optional[int]:
         await self.ensure_ready()
+        if time.time() < self.chat_backoff_until:
+            return None
         chat_node = get_users_node(self.user_id, other_user_id)
-        resp = await self.client.get(f"/chat/?node={chat_node}")
-        resp.raise_for_status()
+        try:
+            resp = await self.client.get(f"/chat/?node={chat_node}")
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429:
+                self.chat_backoff_until = time.time() + 30
+                return None
+            raise
         self._capture_cookies(resp)
         soup = BeautifulSoup(resp.text, "html.parser")
         items = soup.select(".chat-msg-item.chat-msg-with-head")
@@ -266,8 +276,15 @@ class FunpayClient:
 
     async def get_dialogs(self) -> list[dict]:
         await self.ensure_ready()
-        resp = await self.client.get("/chat/")
-        resp.raise_for_status()
+        if time.time() < self.dialog_backoff_until:
+            return []
+        try:
+            resp = await self.client.get("/chat/")
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429:
+                self.dialog_backoff_until = time.time() + 30
+            raise
         soup = BeautifulSoup(resp.text, "html.parser")
         dialogs: list[dict] = []
         for item in soup.select(".contact-item"):
@@ -345,6 +362,78 @@ class FunpayClient:
                     avatar_url = match.group(1).strip("'\"")
 
         return {"user_id": user_id, "name": name, "avatar": avatar_url}
+
+    async def get_chat_history(
+        self,
+        other_user_id: str,
+        chat_node: Optional[str] = None,
+        limit: int = 150,
+    ) -> list[dict]:
+        await self.ensure_ready()
+        node = chat_node or get_users_node(self.user_id, other_user_id)
+        limit = max(1, min(int(limit or 150), 300))
+        results: list[dict] = []
+        seen_ids: set[int] = set()
+        last_message: Optional[int] = None
+        pages = 0
+
+        while len(results) < limit and pages < 10:
+            url = f"/chat/?node={node}"
+            if last_message:
+                url = f"{url}&last_message={last_message}"
+            resp = await self.client.get(url)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            page_items = soup.select(".chat-msg-item[id^='message-']")
+            if not page_items:
+                break
+
+            page_results: list[dict] = []
+            for item in page_items:
+                msg_id_attr = item.get("id", "")
+                match = re.search(r"message-(\d+)", msg_id_attr)
+                if not match:
+                    continue
+                msg_id = int(match.group(1))
+                if msg_id in seen_ids:
+                    continue
+                seen_ids.add(msg_id)
+                parsed = parse_message_html(str(item))
+
+                author = None
+                author_link = item.select_one(".chat-msg-author-link[href*='/users/']")
+                if author_link and author_link.get("href"):
+                    author_match = re.search(r"/users/(\d+)/", author_link.get("href"))
+                    if author_match:
+                        author = author_match.group(1)
+
+                page_results.append(
+                    {
+                        "id": msg_id,
+                        "author": author,
+                        "username": parsed.username,
+                        "body": parsed.body,
+                        "created_at": parsed.created_at,
+                        "raw": str(item),
+                    }
+                )
+
+            if not page_results:
+                break
+
+            results.extend(page_results)
+            oldest_id = min(item["id"] for item in page_results)
+            if last_message is not None and oldest_id >= last_message:
+                break
+            last_message = oldest_id
+            pages += 1
+
+        return results[:limit]
+
+    async def get_partner_info(self, other_user_id: str) -> dict:
+        chat_node = get_users_node(self.user_id, other_user_id)
+        return await self.get_partner_from_node(chat_node)
 
     async def get_offers(self) -> list[dict]:
         await self.ensure_ready()
@@ -447,6 +536,7 @@ async def on_startup():
     app.state.partner_cache_ttl = 600
     app.state.dialog_cache = {}
     app.state.dialog_cache_ttl = 900
+    app.state.dialog_list_cache = {"ts": 0.0, "data": []}
     if settings.initial_key:
         await start_session(settings.initial_key, settings.base_url)
     else:
@@ -548,10 +638,26 @@ async def list_dialogs(session: Session = Depends(get_session)):
     if not client:
         raise HTTPException(status_code=400, detail="No active session. Set Golden Key first.")
 
-    dialogs = await client.get_dialogs()
+    now = time.time()
+    list_cache = app.state.dialog_list_cache
+    cached_dialogs = list_cache.get("data") or []
+    cached_ts = list_cache.get("ts", 0.0)
+    dialogs = []
+    if now - cached_ts < 20 and cached_dialogs:
+        dialogs = cached_dialogs
+    else:
+        try:
+            dialogs = await client.get_dialogs()
+            list_cache["data"] = dialogs
+            list_cache["ts"] = now
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429 and cached_dialogs:
+                dialogs = cached_dialogs
+                list_cache["ts"] = now
+            else:
+                raise HTTPException(status_code=502, detail="FunPay rate limited. Try again soon.")
     cache: dict = getattr(app.state, "dialog_cache", {})
     ttl = getattr(app.state, "dialog_cache_ttl", 900)
-    now = time.time()
     result = []
 
     for dialog in dialogs:
@@ -564,31 +670,12 @@ async def list_dialogs(session: Session = Depends(get_session)):
         name = dialog.get("name")
         avatar = dialog.get("avatar")
 
-        if cached and now - cached.get("ts", 0) < ttl:
+        # Avoid per-dialog /chat/?node=... requests (rate limits).
+        # We resolve user_id lazily when the user opens a dialog via /api/messages/sync.
+        if cached:
             user_id = cached.get("user_id")
             name = cached.get("name") or name
             avatar = cached.get("avatar") or avatar
-        else:
-            try:
-                info = await client.get_partner_from_node(node_id)
-                user_id = info.get("user_id")
-                name = info.get("name") or name
-                avatar = info.get("avatar") or avatar
-                cache[node_id] = {
-                    "user_id": user_id,
-                    "name": name,
-                    "avatar": avatar,
-                    "ts": now,
-                }
-            except Exception:
-                if cached:
-                    user_id = cached.get("user_id")
-                    name = cached.get("name") or name
-                    avatar = cached.get("avatar") or avatar
-
-        if user_id and not session.get(Node, str(user_id)):
-            session.add(Node(id=str(user_id)))
-            session.commit()
 
         result.append(
             {
@@ -625,6 +712,12 @@ class SendMessage(SQLModel):
     message: str
 
 
+class SyncMessages(SQLModel):
+    node: Optional[str] = None
+    chat_node: Optional[str] = None
+    limit: Optional[int] = 150
+
+
 class UpdatePrice(SQLModel):
     node: str
     offer: str
@@ -656,6 +749,81 @@ async def send_message(payload: SendMessage, session: Session = Depends(get_sess
         raise HTTPException(status_code=500, detail=str(exc))
 
     return {"status": "ok", "node": node_id}
+
+
+@app.post("/api/messages/sync")
+async def sync_messages(payload: SyncMessages, session: Session = Depends(get_session)):
+    node_id = str(payload.node) if payload.node else None
+    client: Optional[FunpayClient] = getattr(app.state, "fp_client", None)
+    if not client:
+        raise HTTPException(status_code=400, detail="No active session. Set Golden Key first.")
+
+    resolved_name = None
+    resolved_avatar = None
+    if not node_id:
+        if not payload.chat_node:
+            raise HTTPException(status_code=400, detail="Either node or chat_node is required.")
+        info = await client.get_partner_from_node(payload.chat_node)
+        node_id = info.get("user_id")
+        resolved_name = info.get("name")
+        resolved_avatar = info.get("avatar")
+        if not node_id:
+            raise HTTPException(status_code=502, detail="Failed to resolve partner user_id for dialog.")
+
+    record = session.get(Node, node_id)
+    if not record:
+        record = Node(id=node_id, last_id=0)
+        session.add(record)
+        session.commit()
+
+    try:
+        history = await client.get_chat_history(
+            node_id, chat_node=payload.chat_node, limit=payload.limit or 150
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    updated_last = record.last_id or 0
+    for item in history:
+        mid = coerce_int(item.get("id"))
+        if mid is None:
+            continue
+        msg = Message(
+            id=mid,
+            node_id=node_id,
+            author=item.get("author"),
+            username=item.get("username"),
+            body=item.get("body"),
+            created_at=item.get("created_at"),
+            raw=item.get("raw"),
+        )
+        session.merge(msg)
+        if mid > updated_last:
+            updated_last = mid
+
+    record.last_id = updated_last
+    session.add(record)
+    session.commit()
+
+    if payload.chat_node:
+        cache: dict = getattr(app.state, "dialog_cache", {})
+        existing = cache.get(payload.chat_node, {}) if isinstance(cache, dict) else {}
+        cache[payload.chat_node] = {
+            "user_id": node_id,
+            "name": resolved_name or existing.get("name"),
+            "avatar": resolved_avatar or existing.get("avatar"),
+            "ts": time.time(),
+        }
+        app.state.dialog_cache = cache
+
+    return {
+        "status": "ok",
+        "count": len(history),
+        "last_id": updated_last,
+        "user_id": node_id,
+        "name": resolved_name,
+        "avatar": resolved_avatar,
+    }
 
 
 @app.get("/api/messages")
