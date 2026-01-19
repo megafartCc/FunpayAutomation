@@ -1012,8 +1012,12 @@ async def list_lots():
     client: Optional[FunpayClient] = getattr(app.state, "fp_client", None)
     if not client:
         raise HTTPException(status_code=400, detail="No active session. Set Golden Key first.")
-    offers = await client.get_offers()
-    return offers
+    try:
+        offers = await client.get_offers()
+        return offers
+    except Exception as exc:
+        logging.exception("Failed to get lots/offers")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch offers: {str(exc)}")
 
 
 @app.get("/api/accounts")
