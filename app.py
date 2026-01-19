@@ -1339,12 +1339,32 @@ async def deauthorize_sessions(account_id: int, session: Session = Depends(get_s
         
         web_session = None
         
+        # Debug: Log client state
+        logging.info("Deauthorize - Client state for account %s: logged_on=%s, has_get_web_session=%s, has_web_session_attr=%s", 
+                    account_id, logged_on, hasattr(client, "get_web_session"), hasattr(client, "web_session"))
+        
         # PRIMARY METHOD: Use get_web_session() - this is the official way per steam library docs
         if hasattr(client, "get_web_session"):
             try:
                 def _get_web_session():
                     sess = client.get_web_session()
+                    logging.info("get_web_session() returned: %s (type: %s)", sess, type(sess) if sess else None)
                     if sess is None:
+                        # Try to get web session cookies directly as fallback
+                        if hasattr(client, "get_web_session_cookies"):
+                            try:
+                                cookies = client.get_web_session_cookies()
+                                logging.info("get_web_session_cookies() returned: %s", cookies)
+                                if cookies:
+                                    # Create a requests.Session with these cookies
+                                    import requests
+                                    sess = requests.Session()
+                                    for cookie in cookies:
+                                        sess.cookies.set(cookie['name'], cookie['value'], domain=cookie.get('domain', '.steamcommunity.com'))
+                                    logging.info("Created requests.Session from web_session_cookies")
+                                    return sess
+                            except Exception as cookie_err:
+                                logging.warning("get_web_session_cookies() failed: %s", cookie_err)
                         raise ValueError("get_web_session() returned None - client may not be fully authenticated")
                     return sess
                 web_session = await asyncio.to_thread(_get_web_session)
@@ -1352,11 +1372,40 @@ async def deauthorize_sessions(account_id: int, session: Session = Depends(get_s
                     logging.info("Got web session via get_web_session() for deauthorize (account %s)", account_id)
             except Exception as e:
                 logging.warning("get_web_session() failed for deauthorize (account %s): %s", account_id, e)
+                logging.exception("Full traceback for get_web_session failure:")
         
-        # FALLBACK: Try web_session property if get_web_session() didn't work
-        if not web_session and hasattr(client, "web_session") and client.web_session:
-            web_session = client.web_session
-            logging.info("Using SteamClient.web_session property for deauthorize (account %s)", account_id)
+        # FALLBACK 1: Try web_session property if get_web_session() didn't work
+        if not web_session and hasattr(client, "web_session"):
+            try:
+                web_session = client.web_session
+                if web_session:
+                    logging.info("Using SteamClient.web_session property for deauthorize (account %s)", account_id)
+                else:
+                    logging.warning("SteamClient.web_session exists but is None for account %s", account_id)
+            except Exception as e:
+                logging.warning("Failed to access web_session property: %s", e)
+        
+        # FALLBACK 2: Try to get cookies directly and create session
+        if not web_session and hasattr(client, "get_web_session_cookies"):
+            try:
+                def _get_cookies_and_create_session():
+                    cookies = client.get_web_session_cookies()
+                    if cookies:
+                        import requests
+                        sess = requests.Session()
+                        for cookie in cookies:
+                            sess.cookies.set(
+                                cookie['name'], 
+                                cookie['value'], 
+                                domain=cookie.get('domain', '.steamcommunity.com')
+                            )
+                        return sess
+                    return None
+                web_session = await asyncio.to_thread(_get_cookies_and_create_session)
+                if web_session:
+                    logging.info("Created web session from get_web_session_cookies() for deauthorize (account %s)", account_id)
+            except Exception as e:
+                logging.warning("get_web_session_cookies() approach failed: %s", e)
         
         # Revoke all authorized devices - this actually kicks active game sessions
         revoked_devices = False
@@ -1541,13 +1590,33 @@ async def change_steam_password_endpoint(account_id: int, payload: ChangePasswor
         
         web_session = None
         
+        # Debug: Log client state
+        logging.info("Password change - Client state for account %s: logged_on=%s, has_get_web_session=%s, has_web_session_attr=%s", 
+                    account_id, logged_on, hasattr(client, "get_web_session"), hasattr(client, "web_session"))
+        
         # PRIMARY METHOD: Use get_web_session() - this is the official way per steam library docs
         # https://steam.readthedocs.io/en/latest/api/steam.client.builtins.html
         if hasattr(client, "get_web_session"):
             try:
                 def _get_web_session():
                     sess = client.get_web_session()
+                    logging.info("get_web_session() returned: %s (type: %s)", sess, type(sess) if sess else None)
                     if sess is None:
+                        # Try to get web session cookies directly as fallback
+                        if hasattr(client, "get_web_session_cookies"):
+                            try:
+                                cookies = client.get_web_session_cookies()
+                                logging.info("get_web_session_cookies() returned: %s", cookies)
+                                if cookies:
+                                    # Create a requests.Session with these cookies
+                                    import requests
+                                    sess = requests.Session()
+                                    for cookie in cookies:
+                                        sess.cookies.set(cookie['name'], cookie['value'], domain=cookie.get('domain', '.steamcommunity.com'))
+                                    logging.info("Created requests.Session from web_session_cookies")
+                                    return sess
+                            except Exception as cookie_err:
+                                logging.warning("get_web_session_cookies() failed: %s", cookie_err)
                         raise ValueError("get_web_session() returned None - client may not be fully authenticated")
                     return sess
                 web_session = await asyncio.to_thread(_get_web_session)
@@ -1555,11 +1624,40 @@ async def change_steam_password_endpoint(account_id: int, payload: ChangePasswor
                     logging.info("Got web session via get_web_session() for account %s", account_id)
             except Exception as e:
                 logging.warning("get_web_session() failed for account %s: %s", account_id, e)
+                logging.exception("Full traceback for get_web_session failure:")
         
-        # FALLBACK: Try web_session property if get_web_session() didn't work
-        if not web_session and hasattr(client, "web_session") and client.web_session:
-            web_session = client.web_session
-            logging.info("Using SteamClient.web_session property for password change (account %s)", account_id)
+        # FALLBACK 1: Try web_session property if get_web_session() didn't work
+        if not web_session and hasattr(client, "web_session"):
+            try:
+                web_session = client.web_session
+                if web_session:
+                    logging.info("Using SteamClient.web_session property for password change (account %s)", account_id)
+                else:
+                    logging.warning("SteamClient.web_session exists but is None for account %s", account_id)
+            except Exception as e:
+                logging.warning("Failed to access web_session property: %s", e)
+        
+        # FALLBACK 2: Try to get cookies directly and create session
+        if not web_session and hasattr(client, "get_web_session_cookies"):
+            try:
+                def _get_cookies_and_create_session():
+                    cookies = client.get_web_session_cookies()
+                    if cookies:
+                        import requests
+                        sess = requests.Session()
+                        for cookie in cookies:
+                            sess.cookies.set(
+                                cookie['name'], 
+                                cookie['value'], 
+                                domain=cookie.get('domain', '.steamcommunity.com')
+                            )
+                        return sess
+                    return None
+                web_session = await asyncio.to_thread(_get_cookies_and_create_session)
+                if web_session:
+                    logging.info("Created web session from get_web_session_cookies() for account %s", account_id)
+            except Exception as e:
+                logging.warning("get_web_session_cookies() approach failed: %s", e)
         
         # FALLBACK: Try to extract cookies from SteamClient and use httpx if web_session unavailable
         if not web_session:
