@@ -1,5 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
-import './index.css'
+import {
+  AppShell,
+  Avatar,
+  Badge,
+  Box,
+  Button,
+  Group,
+  Paper,
+  ScrollArea,
+  Stack,
+  Text,
+  Textarea,
+} from '@mantine/core'
+import { useMediaQuery } from '@mantine/hooks'
 
 const api = async (path, options = {}) => {
   const res = await fetch(path, {
@@ -27,22 +40,31 @@ const api = async (path, options = {}) => {
 export default function App() {
   const [session, setSession] = useState({ polling: false, userId: null })
   const [dialogs, setDialogs] = useState([])
+  const [activeChatNode, setActiveChatNode] = useState(null)
   const [activeNode, setActiveNode] = useState(null)
   const [messages, setMessages] = useState([])
   const [messageText, setMessageText] = useState('')
   const [loadingMsgs, setLoadingMsgs] = useState(false)
   const [error, setError] = useState('')
 
+  const isNarrow = useMediaQuery('(max-width: 900px)')
+  const headerHeight = 70
+
   const statusLabel = useMemo(() => {
     if (error) return { text: 'Error', tone: 'danger' }
-    if (session.polling) return { text: `Active · ${session.userId || ''}`, tone: 'success' }
+    if (session.polling) {
+      return {
+        text: session.userId ? `Active - ${session.userId}` : 'Active',
+        tone: 'success',
+      }
+    }
     return { text: 'Idle', tone: 'muted' }
   }, [session, error])
 
   useEffect(() => {
     loadSession()
     loadDialogs()
-    const timer = setInterval(loadDialogs, 15000)
+    const timer = setInterval(loadDialogs, 30000)
     return () => clearInterval(timer)
   }, [])
 
@@ -71,15 +93,34 @@ export default function App() {
     }
   }
 
-  const selectDialog = async (dialog) => {
-    if (!dialog.user_id) return
+  const syncMessages = async (nodeId, chatNode) => {
+    if (!nodeId && !chatNode) return null
     try {
-      await api('/api/nodes', { method: 'POST', body: JSON.stringify({ node: dialog.user_id }) })
-    } catch {
-      // ignore
+      const data = await api('/api/messages/sync', {
+        method: 'POST',
+        body: JSON.stringify({ node: nodeId || null, chat_node: chatNode || null }),
+      })
+      return data
+    } catch (e) {
+      setError(e.message)
+      return null
     }
-    setActiveNode(dialog.user_id)
-    await refreshMessages(dialog.user_id, true)
+  }
+
+  const selectDialog = async (dialog) => {
+    setMessages([])
+    setLoadingMsgs(true)
+    setActiveChatNode(dialog.node_id)
+    setActiveNode(dialog.user_id || null)
+
+    const sync = await syncMessages(dialog.user_id || null, dialog.node_id)
+    const resolvedUserId = sync?.user_id || dialog.user_id
+    if (!resolvedUserId) {
+      setLoadingMsgs(false)
+      return
+    }
+    setActiveNode(resolvedUserId)
+    await refreshMessages(resolvedUserId, true)
   }
 
   const refreshMessages = async (nodeId, withLoading = true) => {
@@ -103,75 +144,144 @@ export default function App() {
         body: JSON.stringify({ node: activeNode, message: messageText }),
       })
       setMessageText('')
+      await syncMessages(activeNode, activeChatNode)
       refreshMessages(activeNode, false)
     } catch (e) {
       setError(e.message)
     }
   }
 
-  const activeDialog = dialogs.find((d) => d.user_id === activeNode)
-  const activeName = activeDialog?.name || activeDialog?.user_id || 'Dialog'
+  const activeDialog = dialogs.find((d) => d.node_id === activeChatNode)
+  const activeName = activeDialog?.name || activeDialog?.user_id || activeDialog?.node_id || 'Dialog'
+
+  const badgeColor =
+    statusLabel.tone === 'success' ? 'green' : statusLabel.tone === 'danger' ? 'red' : 'gray'
 
   return (
-    <div className="page">
-      <div className="wrap">
-        <header className="logo-bar">
-          <img src="/logo-funpay.svg" alt="FunPay" className="logo" />
-        </header>
+    <AppShell
+      header={{ height: headerHeight }}
+      padding="md"
+      style={{ height: '100dvh' }}
+      styles={{
+        main: {
+          background: '#20252b',
+          height: `calc(100dvh - ${headerHeight}px)`,
+        },
+      }}
+    >
+      <AppShell.Header>
+        <Group justify="center" h="100%">
+          <img src="/logo-funpay.svg" alt="FunPay" style={{ width: 190, height: 'auto' }} />
+        </Group>
+      </AppShell.Header>
 
-        <div className="content">
-          <aside className="dialogs">
-            <div className="dialogs-header">
-              <div className="title">Messages</div>
-              <div className={`pill ${statusLabel.tone}`}>{statusLabel.text}</div>
-            </div>
-            <div className="dialog-list">
-              {dialogs.length === 0 && <div className="muted">No dialogs yet.</div>}
-              {dialogs.map((d) => {
-                const name = d.name || d.user_id || d.node_id
-                const preview = d.preview || `#${d.node_id}`
-                return (
-                  <div
-                    key={d.node_id}
-                    className={`dialog-item ${activeNode === d.user_id ? 'active' : ''}`}
-                    onClick={() => selectDialog(d)}
-                  >
-                    <Avatar name={name} src={d.avatar} />
-                    <div className="dialog-body">
-                      <div className="dialog-top">
-                        <div className="dialog-name">{name}</div>
-                        <div className="dialog-time">{d.time || ''}</div>
-                      </div>
-                      <div className="dialog-preview">{preview}</div>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          </aside>
+      <AppShell.Main>
+        <Box
+          style={{
+            height: '100%',
+            display: 'grid',
+            gridTemplateColumns: isNarrow ? '1fr' : '320px minmax(520px, 1fr)',
+            gridTemplateRows: isNarrow ? 'minmax(0, 1fr) minmax(0, 1fr)' : '1fr',
+            gap: 16,
+            maxWidth: 1200,
+            margin: '0 auto',
+          }}
+        >
+          <Paper withBorder radius="md" p="md" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <Group justify="space-between" mb="xs">
+              <Text fw={700}>Messages</Text>
+              <Badge color={badgeColor} variant="light">
+                {statusLabel.text}
+              </Badge>
+            </Group>
+            <ScrollArea style={{ flex: 1, minHeight: 0 }} offsetScrollbars scrollbarSize={8}>
+              <Stack gap="xs">
+                {dialogs.length === 0 && (
+                  <Text size="sm" c="dimmed">
+                    No dialogs yet.
+                  </Text>
+                )}
+                {dialogs.map((d) => {
+                  const name = d.name || d.user_id || d.node_id
+                  const preview = d.preview || `#${d.node_id}`
+                  const letter = name ? name.slice(0, 1).toUpperCase() : '?'
+                  const isActive = activeChatNode === d.node_id
+                  return (
+                    <Paper
+                      key={d.node_id}
+                      withBorder
+                      radius="md"
+                      p="sm"
+                      onClick={() => selectDialog(d)}
+                      style={{
+                        cursor: 'pointer',
+                        background: isActive ? '#2f3642' : 'transparent',
+                      }}
+                    >
+                      <Group align="flex-start" gap="sm" wrap="nowrap">
+                        <Avatar src={d.avatar} radius="xl" color="gray">
+                          {letter}
+                        </Avatar>
+                        <Box style={{ flex: 1, minWidth: 0 }}>
+                          <Group justify="space-between" gap="xs" wrap="nowrap">
+                            <Text fw={600} size="sm" truncate>
+                              {name}
+                            </Text>
+                            <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
+                              {d.time || ''}
+                            </Text>
+                          </Group>
+                          <Text size="xs" c="dimmed" truncate>
+                            {preview}
+                          </Text>
+                        </Box>
+                      </Group>
+                    </Paper>
+                  )
+                })}
+              </Stack>
+            </ScrollArea>
+          </Paper>
 
-          <section className="chat">
-            <div className="chat-header">
-              <div className="chat-title">{activeName}</div>
-              <div className="chat-sub">{loadingMsgs ? 'Loading…' : 'Auto-refresh 4s'}</div>
-            </div>
-            <div className="chat-body">
-              {!activeNode && <div className="muted">Select a dialog on the left.</div>}
-              {activeNode && messages.length === 0 && !loadingMsgs && (
-                <div className="muted">No messages yet.</div>
-              )}
-              {messages.map((m) => (
-                <div key={m.id} className="message">
-                  <div className="message-meta">
-                    <span className="message-author">{m.username || 'Unknown'}</span>
-                    <span className="message-time">#{m.id}{m.created_at ? ` · ${m.created_at}` : ''}</span>
-                  </div>
-                  <div className="message-text">{m.body}</div>
-                </div>
-              ))}
-            </div>
-            <div className="chat-input">
-              <textarea
+          <Paper withBorder radius="md" p="md" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <Group justify="space-between" mb="xs">
+              <Text fw={700}>{activeName}</Text>
+              <Text size="xs" c="dimmed">
+                {loadingMsgs ? 'Loading...' : 'Auto-refresh 4s'}
+              </Text>
+            </Group>
+            <ScrollArea style={{ flex: 1, minHeight: 0 }} offsetScrollbars scrollbarSize={8}>
+              <Stack gap="sm">
+                {!activeChatNode && (
+                  <Text size="sm" c="dimmed">
+                    Select a dialog on the left.
+                  </Text>
+                )}
+                {activeChatNode && activeNode && messages.length === 0 && !loadingMsgs && (
+                  <Text size="sm" c="dimmed">
+                    No messages yet.
+                  </Text>
+                )}
+                {messages.map((m) => (
+                  <Paper key={m.id} withBorder radius="md" p="sm" style={{ background: '#242a33' }}>
+                    <Group justify="space-between" gap="xs" mb={4}>
+                      <Text size="xs" fw={600}>
+                        {m.username || 'Unknown'}
+                      </Text>
+                      <Text size="xs" c="dimmed">
+                        #{m.id}
+                        {m.created_at ? ` at ${m.created_at}` : ''}
+                      </Text>
+                    </Group>
+                    <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
+                      {m.body}
+                    </Text>
+                  </Paper>
+                ))}
+              </Stack>
+            </ScrollArea>
+            <Group align="flex-end" mt="sm" wrap="nowrap">
+              <Textarea
                 value={messageText}
                 onChange={(e) => setMessageText(e.target.value)}
                 onKeyDown={(e) => {
@@ -181,25 +291,18 @@ export default function App() {
                   }
                 }}
                 placeholder="Write a message..."
-                rows={2}
+                autosize
+                minRows={2}
+                maxRows={4}
+                style={{ flex: 1 }}
               />
-              <button onClick={sendMessage} disabled={!activeNode}>
+              <Button onClick={sendMessage} disabled={!activeNode}>
                 Send
-              </button>
-            </div>
-          </section>
-
-          <div className="spacer" />
-        </div>
-      </div>
-    </div>
+              </Button>
+            </Group>
+          </Paper>
+        </Box>
+      </AppShell.Main>
+    </AppShell>
   )
-}
-
-function Avatar({ name, src }) {
-  if (src) {
-    return <img className="avatar" src={src} alt={name || 'avatar'} />
-  }
-  const letter = name ? name.slice(0, 1).toUpperCase() : '?'
-  return <div className="avatar placeholder">{letter}</div>
 }
