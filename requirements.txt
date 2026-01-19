@@ -22,3 +22,7 @@ protobuf==3.20.3
 
 # Production server
 gunicorn
+
+# Selenium for browser automation (like AUTO-STEAM-RENT)
+selenium==4.15.2
+webdriver-manager==4.0.1

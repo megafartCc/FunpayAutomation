@@ -1470,7 +1470,161 @@ async def stop_rental(account_id: int, session: Session = Depends(get_session)):
                     except Exception as e:
                         logging.warning("Failed to change password via web session: %s", e)
                 
-                # FALLBACK: If we couldn't get web session, try WebAuth to create a fresh session
+                # FALLBACK 1: Try Selenium browser automation (like AUTO-STEAM-RENT does)
+                if not results["password_changed"]:
+                    logging.info("Trying Selenium browser automation to change password for account %s", account_id)
+                    try:
+                        def _selenium_change_password():
+                            try:
+                                from selenium import webdriver
+                                from selenium.webdriver.common.by import By
+                                from selenium.webdriver.support.ui import WebDriverWait
+                                from selenium.webdriver.support import expected_conditions as EC
+                                from selenium.webdriver.chrome.options import Options
+                                from selenium.webdriver.chrome.service import Service
+                                from webdriver_manager.chrome import ChromeDriverManager
+                                
+                                # Setup Chrome in headless mode
+                                chrome_options = Options()
+                                chrome_options.add_argument('--headless')
+                                chrome_options.add_argument('--no-sandbox')
+                                chrome_options.add_argument('--disable-dev-shm-usage')
+                                chrome_options.add_argument('--disable-gpu')
+                                chrome_options.add_argument('--window-size=1920,1080')
+                                chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+                                
+                                # Use webdriver-manager to automatically download ChromeDriver
+                                service = Service(ChromeDriverManager().install())
+                                driver = webdriver.Chrome(service=service, options=chrome_options)
+                                
+                                try:
+                                    # Navigate to Steam login
+                                    driver.get('https://store.steampowered.com/login/')
+                                    wait = WebDriverWait(driver, 30)
+                                    
+                                    # Enter username
+                                    username_field = wait.until(EC.presence_of_element_located((By.ID, "input_username")))
+                                    username_field.clear()
+                                    username_field.send_keys(account.username)
+                                    
+                                    # Enter password
+                                    password_field = driver.find_element(By.ID, "input_password")
+                                    password_field.clear()
+                                    password_field.send_keys(account.password)
+                                    
+                                    # Click login button
+                                    login_button = driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
+                                    login_button.click()
+                                    
+                                    # Wait for login to complete (might need 2FA)
+                                    time.sleep(3)
+                                    
+                                    # If 2FA is needed, generate code
+                                    if account.twofa_otp:
+                                        try:
+                                            # Check if 2FA field appears
+                                            try:
+                                                twofa_field = driver.find_element(By.ID, "twofactorcode_entry")
+                                                # Generate 2FA code
+                                                import base64
+                                                import hmac
+                                                import hashlib
+                                                import struct
+                                                secret_bytes = base64.b64decode(account.twofa_otp)
+                                                timestamp = int(time.time()) // 30
+                                                msg = struct.pack(">Q", timestamp)
+                                                hmac_hash = hmac.new(secret_bytes, msg, hashlib.sha1).digest()
+                                                offset = hmac_hash[-1] & 0x0F
+                                                code_int = int.from_bytes(hmac_hash[offset:offset + 4], "big") & 0x7FFFFFFF
+                                                alphabet = "23456789BCDFGHJKMNPQRTVWXY"
+                                                two_factor_code = ""
+                                                for _ in range(5):
+                                                    two_factor_code += alphabet[code_int % len(alphabet)]
+                                                    code_int //= len(alphabet)
+                                                
+                                                twofa_field.clear()
+                                                twofa_field.send_keys(two_factor_code)
+                                                
+                                                # Submit 2FA
+                                                submit_btn = driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
+                                                submit_btn.click()
+                                                time.sleep(3)
+                                            except:
+                                                pass  # No 2FA needed
+                                        except Exception as e:
+                                            logging.warning("2FA handling in Selenium failed: %s", e)
+                                    
+                                    # Navigate to change password page
+                                    driver.get('https://store.steampowered.com/account/changepassword')
+                                    time.sleep(2)
+                                    
+                                    # Fill in password change form
+                                    current_password_field = wait.until(EC.presence_of_element_located((By.ID, "current_password")))
+                                    current_password_field.clear()
+                                    current_password_field.send_keys(account.password)
+                                    
+                                    new_password_field = driver.find_element(By.ID, "new_password")
+                                    new_password_field.clear()
+                                    new_password_field.send_keys(new_password)
+                                    
+                                    confirm_password_field = driver.find_element(By.ID, "confirm_new_password")
+                                    confirm_password_field.clear()
+                                    confirm_password_field.send_keys(new_password)
+                                    
+                                    # Submit password change
+                                    change_button = driver.find_element(By.CSS_SELECTOR, "button[type='submit'], input[type='submit']")
+                                    change_button.click()
+                                    
+                                    # Wait for result
+                                    time.sleep(3)
+                                    
+                                    # Check if password change was successful
+                                    page_text = driver.page_source.lower()
+                                    if 'successfully changed' in page_text or 'password has been changed' in page_text:
+                                        return True
+                                    
+                                    # Also try to deauthorize devices
+                                    try:
+                                        driver.get('https://store.steampowered.com/twofactor/manage')
+                                        time.sleep(2)
+                                        
+                                        # Look for deauthorize button
+                                        deauth_buttons = driver.find_elements(By.XPATH, "//a[contains(text(), 'Deauthorize') or contains(text(), 'deauthorize')]")
+                                        if not deauth_buttons:
+                                            deauth_buttons = driver.find_elements(By.XPATH, "//button[contains(text(), 'Deauthorize')]")
+                                        
+                                        for btn in deauth_buttons:
+                                            try:
+                                                btn.click()
+                                                time.sleep(2)
+                                                # Confirm if needed
+                                                confirm_buttons = driver.find_elements(By.XPATH, "//button[contains(text(), 'Confirm') or contains(text(), 'Yes')]")
+                                                for confirm_btn in confirm_buttons:
+                                                    confirm_btn.click()
+                                                    time.sleep(2)
+                                                break
+                                            except:
+                                                continue
+                                    except Exception as e:
+                                        logging.warning("Selenium deauthorize attempt failed: %s", e)
+                                    
+                                    return 'successfully changed' in page_text or 'password has been changed' in page_text
+                                    
+                                finally:
+                                    driver.quit()
+                            except Exception as e:
+                                logging.warning("Selenium password change failed: %s", e)
+                                return False
+                        
+                        if await asyncio.to_thread(_selenium_change_password):
+                            account.password = new_password
+                            results["password_changed"] = True
+                            logging.info("Password changed successfully via Selenium for account %s (stop rental)", account_id)
+                    except Exception as e:
+                        logging.warning("Selenium fallback failed: %s", e)
+                        logging.exception("Full Selenium traceback:")
+                
+                # FALLBACK 2: If we couldn't get web session, try WebAuth to create a fresh session
                 if not results["password_changed"] and not web_session:
                     logging.info("Trying WebAuth fallback to change password for account %s", account_id)
                     try:
@@ -2126,13 +2280,132 @@ async def change_steam_password_endpoint(account_id: int, payload: ChangePasswor
             except Exception as e:
                 logging.warning("httpx approach failed for account %s: %s", account_id, e)
         
-        # If we still don't have a web_session, we can't proceed
+        # If we still don't have a web_session, try Selenium as fallback (like AUTO-STEAM-RENT)
         if not web_session:
-            logging.error("SteamClient is logged on but web session is unavailable for account %s", account_id)
-            raise HTTPException(
-                status_code=500,
-                detail="Could not access web session for password change. Please try logging out and logging back in, then try again."
-            )
+            logging.info("Web session unavailable, trying Selenium browser automation for account %s", account_id)
+            try:
+                def _selenium_change_password():
+                    try:
+                        from selenium import webdriver
+                        from selenium.webdriver.common.by import By
+                        from selenium.webdriver.support.ui import WebDriverWait
+                        from selenium.webdriver.support import expected_conditions as EC
+                        from selenium.webdriver.chrome.options import Options
+                        from selenium.webdriver.chrome.service import Service
+                        from webdriver_manager.chrome import ChromeDriverManager
+                        
+                        # Setup Chrome in headless mode
+                        chrome_options = Options()
+                        chrome_options.add_argument('--headless')
+                        chrome_options.add_argument('--no-sandbox')
+                        chrome_options.add_argument('--disable-dev-shm-usage')
+                        chrome_options.add_argument('--disable-gpu')
+                        chrome_options.add_argument('--window-size=1920,1080')
+                        chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+                        
+                        service = Service(ChromeDriverManager().install())
+                        driver = webdriver.Chrome(service=service, options=chrome_options)
+                        
+                        try:
+                            # Login to Steam
+                            driver.get('https://store.steampowered.com/login/')
+                            wait = WebDriverWait(driver, 30)
+                            
+                            username_field = wait.until(EC.presence_of_element_located((By.ID, "input_username")))
+                            username_field.clear()
+                            username_field.send_keys(account.username)
+                            
+                            password_field = driver.find_element(By.ID, "input_password")
+                            password_field.clear()
+                            password_field.send_keys(account.password)
+                            
+                            login_button = driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
+                            login_button.click()
+                            time.sleep(3)
+                            
+                            # Handle 2FA if needed
+                            if account.twofa_otp:
+                                try:
+                                    twofa_field = driver.find_element(By.ID, "twofactorcode_entry")
+                                    import base64
+                                    import hmac
+                                    import hashlib
+                                    import struct
+                                    secret_bytes = base64.b64decode(account.twofa_otp)
+                                    timestamp = int(time.time()) // 30
+                                    msg = struct.pack(">Q", timestamp)
+                                    hmac_hash = hmac.new(secret_bytes, msg, hashlib.sha1).digest()
+                                    offset = hmac_hash[-1] & 0x0F
+                                    code_int = int.from_bytes(hmac_hash[offset:offset + 4], "big") & 0x7FFFFFFF
+                                    alphabet = "23456789BCDFGHJKMNPQRTVWXY"
+                                    two_factor_code = ""
+                                    for _ in range(5):
+                                        two_factor_code += alphabet[code_int % len(alphabet)]
+                                        code_int //= len(alphabet)
+                                    
+                                    twofa_field.clear()
+                                    twofa_field.send_keys(two_factor_code)
+                                    submit_btn = driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
+                                    submit_btn.click()
+                                    time.sleep(3)
+                                except:
+                                    pass
+                            
+                            # Navigate to change password
+                            driver.get('https://store.steampowered.com/account/changepassword')
+                            time.sleep(2)
+                            
+                            # Fill password change form
+                            current_password_field = wait.until(EC.presence_of_element_located((By.ID, "current_password")))
+                            current_password_field.clear()
+                            current_password_field.send_keys(account.password)
+                            
+                            new_password_field = driver.find_element(By.ID, "new_password")
+                            new_password_field.clear()
+                            new_password_field.send_keys(new_password)
+                            
+                            confirm_password_field = driver.find_element(By.ID, "confirm_new_password")
+                            confirm_password_field.clear()
+                            confirm_password_field.send_keys(new_password)
+                            
+                            # Submit
+                            change_button = driver.find_element(By.CSS_SELECTOR, "button[type='submit'], input[type='submit']")
+                            change_button.click()
+                            time.sleep(3)
+                            
+                            # Check success
+                            page_text = driver.page_source.lower()
+                            return 'successfully changed' in page_text or 'password has been changed' in page_text
+                        finally:
+                            driver.quit()
+                    except Exception as e:
+                        logging.warning("Selenium password change failed: %s", e)
+                        return False
+                
+                if await asyncio.to_thread(_selenium_change_password):
+                    account.password = new_password
+                    account.updated_at = time.time()
+                    session.add(account)
+                    session.commit()
+                    logging.info("Password changed successfully via Selenium for account %s", account_id)
+                    return {"status": "ok", "message": "Password changed successfully."}
+                else:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Could not access web session for password change. Selenium automation also failed. Please try logging out and logging back in."
+                    )
+            except ImportError:
+                logging.warning("Selenium not available, falling back to error")
+                raise HTTPException(
+                    status_code=500,
+                    detail="Could not access web session for password change. Selenium is not installed. Please install: pip install selenium webdriver-manager"
+                )
+            except Exception as e:
+                logging.exception("Selenium fallback failed: %s", e)
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Could not access web session for password change. Selenium failed: {str(e)}"
+                )
         
         # Use web_session to change password - this is a requests.Session from get_web_session()
         # Get sessionid from the web session cookies
