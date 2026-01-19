@@ -329,6 +329,10 @@ class FunpayClient:
             raise RuntimeError("Failed to read userId from app data.")
 
     async def get_user_last_message(self, other_user_id: str) -> Optional[int]:
+        """
+        Get the last message ID from a chat.
+        Improved with multiple selectors (like AUTO-STEAM-RENT).
+        """
         await self.ensure_ready()
         if time.time() < self.chat_backoff_until:
             return None
@@ -343,17 +347,49 @@ class FunpayClient:
             raise
         self._capture_cookies(resp)
         soup = BeautifulSoup(resp.text, "html.parser")
-        items = soup.select(".chat-msg-item.chat-msg-with-head")
+        
+        # Try multiple selectors for message items
+        items = (soup.select(".chat-msg-item.chat-msg-with-head") or
+                soup.select(".chat-msg-item[id^='message-']") or
+                soup.select(".message-item[id^='message-']") or
+                soup.select("[id^='message-']") or
+                soup.select(".chat-msg-item"))
+        
         if not items:
             return None
+        
+        # Get the last message (most recent)
         last = items[-1]
-        msg_id_attr = last.get("id")
-        if not msg_id_attr:
-            return None
-        try:
-            return int(msg_id_attr.split("-")[1])
-        except Exception:
-            return None
+        
+        # Try multiple methods to extract message ID
+        msg_id_attr = last.get("id", "")
+        msg_id = None
+        
+        # Method 1: message-123 format
+        if msg_id_attr:
+            match = re.search(r"message-(\d+)", msg_id_attr)
+            if match:
+                try:
+                    return int(match.group(1))
+                except:
+                    pass
+        
+        # Method 2: data-id attribute
+        msg_id = last.get("data-id") or last.get("data-message-id")
+        if msg_id:
+            try:
+                return int(msg_id)
+            except:
+                pass
+        
+        # Method 3: Try splitting id attribute
+        if msg_id_attr and "-" in msg_id_attr:
+            try:
+                return int(msg_id_attr.split("-")[1])
+            except:
+                pass
+        
+        return None
 
     async def runner(self, objects: list[dict], request: Optional[dict] = None) -> dict:
         await self.ensure_ready()
