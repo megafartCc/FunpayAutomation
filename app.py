@@ -222,12 +222,46 @@ class Account(SQLModel, table=True):
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)
     ensure_mysql_bigint()
+    ensure_account_columns()  # Add new columns if they don't exist
     if settings.default_nodes:
         with Session(engine) as session:
             for node_id in settings.default_nodes:
                 if not session.get(Node, node_id):
                     session.add(Node(id=node_id))
             session.commit()
+
+
+def ensure_account_columns() -> None:
+    """Add new Account columns if they don't exist (migration)."""
+    if engine.dialect.name != "mysql":
+        return  # SQLite handles this automatically with SQLModel
+    
+    columns_to_add = [
+        ("shared_secret", "TEXT NULL"),
+        ("is_rented", "TINYINT(1) DEFAULT 0"),
+        ("rented_to_user_id", "VARCHAR(255) NULL"),
+        ("session_id", "VARCHAR(255) NULL"),
+        ("expires_at", "BIGINT NULL"),
+    ]
+    
+    with engine.begin() as conn:
+        for column_name, column_def in columns_to_add:
+            try:
+                # Check if column exists
+                result = conn.execute(text(
+                    f"SELECT COUNT(*) FROM information_schema.COLUMNS "
+                    f"WHERE TABLE_SCHEMA = DATABASE() "
+                    f"AND TABLE_NAME = 'account' "
+                    f"AND COLUMN_NAME = '{column_name}'"
+                ))
+                exists = result.scalar() > 0
+                
+                if not exists:
+                    logging.info("Adding column 'account.%s' to database", column_name)
+                    conn.execute(text(f"ALTER TABLE account ADD COLUMN {column_name} {column_def}"))
+                    conn.commit()
+            except Exception as exc:
+                logging.warning("Failed to add column 'account.%s': %s", column_name, exc)
 
 
 def ensure_mysql_bigint() -> None:
