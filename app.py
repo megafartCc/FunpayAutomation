@@ -16,6 +16,8 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import BigInteger, Column, text
+from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 from steam.client import SteamClient
@@ -180,6 +182,24 @@ def ensure_mysql_bigint() -> None:
         except Exception as exc:
             logging.warning("Failed to alter node.last_id to BIGINT: %s", exc)
             pass
+
+
+def bulk_insert_messages(session: Session, rows: list[dict]) -> None:
+    if not rows:
+        return
+    dialect = engine.dialect.name
+    try:
+        if dialect == "mysql":
+            stmt = mysql_insert(Message).values(rows).prefix_with("IGNORE")
+            session.execute(stmt)
+        elif dialect == "sqlite":
+            stmt = sqlite_insert(Message).values(rows).prefix_with("OR IGNORE")
+            session.execute(stmt)
+        else:
+            for row in rows:
+                session.add(Message(**row))
+    except IntegrityError:
+        session.rollback()
 
 
 async def start_session(golden_key: str, base_url: Optional[str] = None):
@@ -909,27 +929,26 @@ async def sync_messages(payload: SyncMessages, session: Session = Depends(get_se
         raise HTTPException(status_code=500, detail=str(exc))
 
     updated_last = record.last_id or 0
+    rows: list[dict] = []
     for item in history:
         mid = coerce_int(item.get("id"))
         if mid is None:
             continue
-        msg = Message(
-            id=mid,
-            node_id=node_id,
-            author=item.get("author"),
-            username=item.get("username"),
-            body=item.get("body"),
-            created_at=item.get("created_at"),
-            raw=item.get("raw"),
+        rows.append(
+            {
+                "id": mid,
+                "node_id": node_id,
+                "author": item.get("author"),
+                "username": item.get("username"),
+                "body": item.get("body"),
+                "created_at": item.get("created_at"),
+                "raw": item.get("raw"),
+            }
         )
-        try:
-            session.merge(msg)
-        except IntegrityError:
-            session.rollback()
-            continue
         if mid > updated_last:
             updated_last = mid
 
+    bulk_insert_messages(session, rows)
     record.last_id = updated_last
     session.add(record)
     session.commit()
@@ -1245,6 +1264,7 @@ async def poll_node(session: Session, client: FunpayClient, log: logging.Logger,
 
     inserted = 0
     new_last_id = node.last_id or 0
+    rows: list[dict] = []
 
     for obj in objects_resp:
         if obj.get("type") != "chat_node" or obj.get("id") != chat_node:
@@ -1256,24 +1276,22 @@ async def poll_node(session: Session, client: FunpayClient, log: logging.Logger,
             if mid is None:
                 continue
             parsed = parse_message_html(item.get("html") or "")
-            msg = Message(
-                id=mid,
-                node_id=node.id,
-                author=str(item.get("author")) if item.get("author") is not None else None,
-                username=parsed.username,
-                body=parsed.body,
-                created_at=parsed.created_at,
-                raw=json.dumps(item, ensure_ascii=False),
+            rows.append(
+                {
+                    "id": mid,
+                    "node_id": node.id,
+                    "author": str(item.get("author")) if item.get("author") is not None else None,
+                    "username": parsed.username,
+                    "body": parsed.body,
+                    "created_at": parsed.created_at,
+                    "raw": json.dumps(item, ensure_ascii=False),
+                }
             )
-            try:
-                session.merge(msg)
-            except IntegrityError:
-                session.rollback()
-                continue
             inserted += 1
             if mid > new_last_id:
                 new_last_id = mid
 
+    bulk_insert_messages(session, rows)
     if inserted:
         node.last_id = new_last_id
         session.add(node)
