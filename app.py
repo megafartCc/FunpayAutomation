@@ -524,39 +524,150 @@ class FunpayClient:
         return await self.get_partner_from_node(chat_node)
 
     async def get_offers(self) -> list[dict]:
+        """
+        Get all current lots/offers from FunPay.
+        Improved parsing similar to AUTO-STEAM-RENT approach.
+        """
         await self.ensure_ready()
-        resp = await self.client.get(f"/users/{self.user_id}/")
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
+        
+        # Try multiple endpoints to get offers
+        endpoints_to_try = [
+            f"/users/{self.user_id}/",  # User profile page
+            "/lots/",  # Direct lots page
+            f"/users/{self.user_id}/lots/",  # User lots page
+        ]
+        
         result: list[dict] = []
-        for offer_block in soup.select(".mb20 .offer"):
-            title = offer_block.select_one(".offer-list-title h3 a")
-            if not title:
+        
+        for endpoint in endpoints_to_try:
+            try:
+                resp = await self.client.get(endpoint)
+                resp.raise_for_status()
+                soup = BeautifulSoup(resp.text, "html.parser")
+                
+                # Method 1: Try .mb20 .offer selector (current method)
+                offer_blocks = soup.select(".mb20 .offer")
+                if not offer_blocks:
+                    # Method 2: Try alternative selectors (in case FunPay changed HTML)
+                    offer_blocks = soup.select(".offer-list .offer")
+                if not offer_blocks:
+                    # Method 3: Try even more generic selectors
+                    offer_blocks = soup.select(".offer")
+                
+                if offer_blocks:
+                    for offer_block in offer_blocks:
+                        # Try multiple title selectors
+                        title = (offer_block.select_one(".offer-list-title h3 a") or
+                                offer_block.select_one(".offer-title a") or
+                                offer_block.select_one("h3 a") or
+                                offer_block.select_one(".title a"))
+                        
+                        if not title:
+                            continue
+                        
+                        group_name = title.get_text(strip=True)
+                        href = title.get("href", "")
+                        
+                        # Extract node from href - try multiple formats
+                        node = None
+                        if href:
+                            # Format: /lots/category/node or /category/node
+                            parts = href.strip("/").split("/")
+                            if len(parts) >= 2:
+                                node = parts[-1]  # Last part is usually the node
+                            elif len(parts) == 1:
+                                node = parts[0]
+                        
+                        if not node:
+                            continue
+                        
+                        # Check if we already have this group
+                        existing_group = next((g for g in result if g.get("node") == node), None)
+                        if existing_group:
+                            group = existing_group
+                        else:
+                            group = {"group_name": group_name, "node": node, "offers": []}
+                            result.append(group)
+                        
+                        # Parse offers in this block - try multiple item selectors
+                        items = (offer_block.select(".tc-item") or
+                                offer_block.select(".offer-item") or
+                                offer_block.select(".lot-item") or
+                                offer_block.select("a[href*='id=']"))
+                        
+                        for item in items:
+                            # Try multiple name selectors
+                            name_el = (item.select_one(".tc-desc-text") or
+                                      item.select_one(".offer-name") or
+                                      item.select_one(".lot-name") or
+                                      item.select_one(".name") or
+                                      item)
+                            
+                            # Try multiple price selectors
+                            price_el = (item.select_one(".tc-price") or
+                                       item.select_one(".offer-price") or
+                                       item.select_one(".lot-price") or
+                                       item.select_one(".price") or
+                                       item.select_one("[class*='price']"))
+                            
+                            # Extract offer ID from href - try multiple formats
+                            href_item = item.get("href") or ""
+                            offer_id = None
+                            
+                            if href_item:
+                                # Format 1: ?id=123 or &id=123
+                                if "id=" in href_item:
+                                    try:
+                                        offer_id = href_item.split("id=")[1].split("&")[0].split("#")[0]
+                                    except Exception:
+                                        pass
+                                # Format 2: /lots/offer/123
+                                elif "/offer/" in href_item:
+                                    try:
+                                        offer_id = href_item.split("/offer/")[1].split("/")[0].split("?")[0]
+                                    except Exception:
+                                        pass
+                                # Format 3: Direct ID in URL
+                                elif href_item.isdigit():
+                                    offer_id = href_item
+                            
+                            # Extract from data attributes
+                            if not offer_id:
+                                offer_id = (item.get("data-offer-id") or
+                                          item.get("data-id") or
+                                          item.get("data-lot-id"))
+                            
+                            offer_name = name_el.get_text(strip=True) if name_el else ""
+                            offer_price = price_el.get_text(strip=True) if price_el else ""
+                            
+                            # Only add if we have at least a name or ID
+                            if offer_name or offer_id:
+                                # Check if offer already exists (avoid duplicates)
+                                existing_offer = next(
+                                    (o for o in group["offers"] if o.get("id") == offer_id or o.get("name") == offer_name),
+                                    None
+                                )
+                                if not existing_offer:
+                                    group["offers"].append({
+                                        "name": offer_name,
+                                        "price": offer_price,
+                                        "id": offer_id,
+                                    })
+                    
+                    # If we found offers, break (don't try other endpoints)
+                    if result:
+                        break
+                        
+            except Exception as e:
+                logging.debug("Failed to parse offers from %s: %s", endpoint, e)
                 continue
-            group_name = title.get_text(strip=True)
-            href = title.get("href", "")
-            node = href.strip("/").split("/")[-1] if href else None
-            if not node:
-                continue
-            group = {"group_name": group_name, "node": node, "offers": []}
-            for item in offer_block.select(".tc-item"):
-                name_el = item.select_one(".tc-desc-text")
-                price_el = item.select_one(".tc-price")
-                href_item = item.get("href") or ""
-                offer_id = None
-                if "id=" in href_item:
-                    try:
-                        offer_id = href_item.split("id=")[1].split("&")[0]
-                    except Exception:
-                        offer_id = None
-                group["offers"].append(
-                    {
-                        "name": name_el.get_text(strip=True) if name_el else "",
-                        "price": price_el.get_text(strip=True) if price_el else "",
-                        "id": offer_id,
-                    }
-                )
-            result.append(group)
+        
+        # Sort offers by group name for consistency
+        result.sort(key=lambda x: x.get("group_name", ""))
+        for group in result:
+            group["offers"].sort(key=lambda x: x.get("name", ""))
+        
+        logging.info("Parsed %d lot groups with %d total offers", len(result), sum(len(g["offers"]) for g in result))
         return result
 
     async def update_price(self, node: str, offer: str, price: float):
