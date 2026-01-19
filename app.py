@@ -668,15 +668,16 @@ async def on_shutdown():
 
 
 # -------- API routes --------
-@app.get("/api/health")
-async def health():
-    """Health check endpoint for Railway."""
+# Health endpoints - defined early so they're not intercepted by static files
+@app.get("/health")
+async def health_simple():
+    """Simple health check endpoint for Railway."""
     return {"status": "ok"}
 
 
-@app.get("/health")
-async def health_simple():
-    """Simple health check endpoint."""
+@app.get("/api/health")
+async def health():
+    """Health check endpoint for Railway."""
     return {"status": "ok"}
 
 
