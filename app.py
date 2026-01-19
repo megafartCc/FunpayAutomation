@@ -259,9 +259,30 @@ def ensure_account_columns() -> None:
                 if not exists:
                     logging.info("Adding column 'account.%s' to database", column_name)
                     conn.execute(text(f"ALTER TABLE account ADD COLUMN {column_name} {column_def}"))
-                    conn.commit()
             except Exception as exc:
                 logging.warning("Failed to add column 'account.%s': %s", column_name, exc)
+        
+        # Ensure ProcessedOrder table exists
+        try:
+            result = conn.execute(text(
+                "SELECT COUNT(*) FROM information_schema.TABLES "
+                "WHERE TABLE_SCHEMA = DATABASE() "
+                "AND TABLE_NAME = 'processedorder'"
+            ))
+            table_exists = result.scalar() > 0
+            
+            if not table_exists:
+                logging.info("Creating 'processedorder' table")
+                conn.execute(text("""
+                    CREATE TABLE processedorder (
+                        order_id VARCHAR(255) NOT NULL PRIMARY KEY,
+                        processed_at DOUBLE NOT NULL,
+                        account_id INT NULL,
+                        user_id VARCHAR(255) NULL
+                    )
+                """))
+        except Exception as exc:
+            logging.warning("Failed to create processedorder table: %s", exc)
 
 
 def ensure_mysql_bigint() -> None:
