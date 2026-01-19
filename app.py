@@ -202,6 +202,11 @@ class Account(SQLModel, table=True):
     steam_id: Optional[str] = None
     login_status: Optional[str] = None
     twofa_otp: Optional[str] = None
+    shared_secret: Optional[str] = None  # For 2FA code generation
+    is_rented: bool = Field(default=False)  # AUTO-STEAM-RENT style
+    rented_to_user_id: Optional[str] = None  # FunPay user ID who rented this
+    session_id: Optional[str] = None  # Rental session ID
+    expires_at: Optional[int] = None  # Rental expiration timestamp
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 
@@ -948,6 +953,57 @@ async def on_startup():
             logging.warning("Failed to start initial session (non-fatal): %s", e)
     else:
         logging.info("FUNPAY_GOLDEN_KEY not set in env; backend will not poll without it.")
+    
+    # Start background task for expired rentals (AUTO-STEAM-RENT style)
+    app.state.rental_cleanup_task = asyncio.create_task(cleanup_expired_rentals())
+
+
+async def cleanup_expired_rentals():
+    """
+    Background task to cleanup expired rentals (AUTO-STEAM-RENT style).
+    Automatically resets accounts when rental expires.
+    """
+    log = logging.getLogger("rental_cleanup")
+    while True:
+        try:
+            await asyncio.sleep(60)  # Check every minute
+            
+            with Session(engine) as session:
+                from sqlmodel import select
+                current_time = int(time.time())
+                
+                # Find expired rentals
+                expired = session.exec(
+                    select(Account).where(
+                        Account.is_rented == True,
+                        Account.expires_at < current_time,
+                    )
+                ).all()
+                
+                for account in expired:
+                    try:
+                        log.info("Resetting expired rental for account %s", account.id)
+                        
+                        # Reset account
+                        account.is_rented = False
+                        account.rented_to_user_id = None
+                        account.session_id = None
+                        account.expires_at = None
+                        
+                        # Optionally change password here (like AUTO-STEAM-RENT)
+                        # This would require Steam login, so we skip it for now
+                        # and let the user manually reset via UI
+                        
+                        session.add(account)
+                        session.commit()
+                        
+                        log.info("Successfully reset account %s", account.id)
+                    except Exception as exc:
+                        log.exception("Error resetting account %s: %s", account.id, exc)
+        
+        except Exception as exc:
+            log.exception("Error in rental cleanup task: %s", exc)
+            await asyncio.sleep(60)
 
 
 @app.on_event("shutdown")
@@ -958,6 +1014,13 @@ async def on_shutdown():
         poller_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await poller_task
+    
+    rental_cleanup_task = getattr(app.state, "rental_cleanup_task", None)
+    if rental_cleanup_task:
+        rental_cleanup_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await rental_cleanup_task
+    
     client: FunpayClient = app.state.fp_client
     if client:
         await client.close()
@@ -2879,6 +2942,243 @@ async def poller():
         await asyncio.sleep(delay)
 
 
+async def process_new_messages(
+    session: Session,
+    client: FunpayClient,
+    log: logging.Logger,
+    node: Node,
+    new_messages: list[dict],
+):
+    """
+    Process new messages automatically (AUTO-STEAM-RENT style):
+    - Handle /code commands (send 2FA code)
+    - Handle /stock commands (check available accounts)
+    - Process new orders (automatically issue accounts)
+    - Handle reviews (extend rental time)
+    """
+    for msg in new_messages:
+        body = (msg.get("body") or "").strip().lower()
+        author = msg.get("author")
+        username = msg.get("username")
+        
+        # Skip our own messages
+        if author == client.user_id or str(author) == str(client.user_id):
+            continue
+        
+        try:
+            # Handle /code command - send 2FA code
+            if body == "/code" or body.startswith("/code "):
+                await handle_code_command(session, client, log, node, msg)
+            
+            # Handle /stock command - check available accounts
+            elif body == "/stock" or body.startswith("/stock "):
+                await handle_stock_command(session, client, log, node, msg)
+            
+            # Handle new order - automatically issue account (AUTO-STEAM-RENT style)
+            # Detect orders by various patterns
+            order_keywords = [
+                "заказ", "order", "куп", "покуп", "новый заказ",
+                "новый ордер", "оформил", "приобрел", "buy", "purchase"
+            ]
+            if any(keyword in body for keyword in order_keywords):
+                await handle_new_order(session, client, log, node, msg)
+            
+            # Handle review - extend rental
+            elif "отзыв" in body or "review" in body or "⭐" in body or "★" in body:
+                await handle_review(session, client, log, node, msg)
+        
+        except Exception as exc:
+            log.exception("Error processing message %s from node %s: %s", msg.get("id"), node.id, exc)
+
+
+async def handle_code_command(
+    session: Session,
+    client: FunpayClient,
+    log: logging.Logger,
+    node: Node,
+    msg: dict,
+):
+    """Handle /code command - send 2FA code to user."""
+    # Find active rental for this user
+    from sqlmodel import select
+    
+    # Try to find account rented to this user
+    account = session.exec(
+        select(Account).where(
+            Account.rented_to_user_id == str(node.id),
+            Account.is_rented == True,
+        )
+    ).first()
+    
+    if not account:
+        await client.send_chat_message(
+            node.id,
+            "❌ У вас нет активной аренды. Сначала оформите заказ.",
+        )
+        return
+    
+    # Generate 2FA code
+    try:
+        code = generate_2fa_code(account.shared_secret)
+        if code:
+            await client.send_chat_message(
+                node.id,
+                f"🔐 Ваш Steam Guard код: **{code}**\n\nКод действителен 30 секунд.",
+            )
+            log.info("Sent 2FA code to user %s for account %s", node.id, account.id)
+        else:
+            await client.send_chat_message(
+                node.id,
+                "❌ Ошибка генерации кода. Обратитесь в поддержку.",
+            )
+    except Exception as exc:
+        log.exception("Error generating 2FA code for account %s: %s", account.id, exc)
+        await client.send_chat_message(
+            node.id,
+            "❌ Ошибка генерации кода. Обратитесь в поддержку.",
+        )
+
+
+async def handle_stock_command(
+    session: Session,
+    client: FunpayClient,
+    log: logging.Logger,
+    node: Node,
+    msg: dict,
+):
+    """Handle /stock command - check available accounts."""
+    from sqlmodel import select
+    
+    # Count available accounts
+    available = session.exec(
+        select(Account).where(Account.is_rented == False)
+    ).all()
+    
+    count = len(available)
+    
+    if count > 0:
+        await client.send_chat_message(
+            node.id,
+            f"✅ В наличии: **{count}** аккаунт(ов)\n\nДоступны для аренды!",
+        )
+    else:
+        await client.send_chat_message(
+            node.id,
+            "❌ К сожалению, сейчас все аккаунты заняты. Попробуйте позже.",
+        )
+    
+    log.info("Stock check for user %s: %d available", node.id, count)
+
+
+async def handle_new_order(
+    session: Session,
+    client: FunpayClient,
+    log: logging.Logger,
+    node: Node,
+    msg: dict,
+):
+    """Handle new order - automatically issue account to user."""
+    from sqlmodel import select
+    import uuid
+    
+    # Find available account
+    account = session.exec(
+        select(Account).where(Account.is_rented == False).limit(1)
+    ).first()
+    
+    if not account:
+        await client.send_chat_message(
+            node.id,
+            "❌ К сожалению, сейчас все аккаунты заняты. Попробуйте позже.",
+        )
+        return
+    
+    # Rent the account
+    session_id = str(uuid.uuid4())
+    expires_at = int(time.time() + 7200)  # 2 hours
+    
+    account.is_rented = True
+    account.rented_to_user_id = str(node.id)
+    account.session_id = session_id
+    account.expires_at = expires_at
+    session.add(account)
+    session.commit()
+    
+    # Send account details
+    message = f"""✅ Ваш аккаунт готов!
+
+👤 Логин: `{account.username}`
+🔑 Пароль: `{account.password}`
+🔐 Steam Guard код: `/code`
+
+⏰ Аренда действительна 2 часа.
+
+Для получения кода Steam Guard используйте команду `/code`"""
+    
+    await client.send_chat_message(node.id, message)
+    log.info("Issued account %s to user %s", account.id, node.id)
+
+
+async def handle_review(
+    session: Session,
+    client: FunpayClient,
+    log: logging.Logger,
+    node: Node,
+    msg: dict,
+):
+    """Handle review - extend rental by 1 hour (AUTO-STEAM-RENT style)."""
+    from sqlmodel import select
+    
+    # Find active rental for this user
+    account = session.exec(
+        select(Account).where(
+            Account.rented_to_user_id == str(node.id),
+            Account.is_rented == True,
+        )
+    ).first()
+    
+    if not account:
+        return  # No active rental, ignore
+    
+    # Extend rental by 1 hour
+    current_expires = account.expires_at or int(time.time())
+    new_expires = current_expires + 3600  # Add 1 hour
+    
+    account.expires_at = new_expires
+    session.add(account)
+    session.commit()
+    
+    await client.send_chat_message(
+        node.id,
+        "✅ Спасибо за отзыв! Ваша аренда продлена на 1 час.",
+    )
+    log.info("Extended rental for account %s (user %s) by 1 hour", account.id, node.id)
+
+
+def generate_2fa_code(shared_secret: str) -> Optional[str]:
+    """Generate Steam Guard 2FA code from shared secret."""
+    try:
+        import base64
+        import hmac
+        import hashlib
+        import struct
+        
+        secret_bytes = base64.b64decode(shared_secret)
+        timestamp = int(time.time()) // 30
+        msg = struct.pack(">Q", timestamp)
+        hmac_hash = hmac.new(secret_bytes, msg, hashlib.sha1).digest()
+        offset = hmac_hash[-1] & 0x0F
+        code_int = int.from_bytes(hmac_hash[offset:offset + 4], "big") & 0x7FFFFFFF
+        alphabet = "23456789BCDFGHJKMNPQRTVWXY"
+        code = ""
+        for _ in range(5):
+            code += alphabet[code_int % len(alphabet)]
+            code_int //= len(alphabet)
+        return code
+    except Exception:
+        return None
+
+
 async def poll_node(session: Session, client: FunpayClient, log: logging.Logger, node: Node):
     await client.ensure_ready()
     chat_node = get_users_node(client.user_id, node.id)
@@ -2960,6 +3260,9 @@ async def poll_node(session: Session, client: FunpayClient, log: logging.Logger,
         session.add(node)
         session.commit()
         log.info("Node %s: stored %s messages, last_id=%s", node.id, inserted, new_last_id)
+        
+        # Process new messages for commands and orders (AUTO-STEAM-RENT style)
+        await process_new_messages(session, client, log, node, rows)
 
 
 if __name__ == "__main__":
