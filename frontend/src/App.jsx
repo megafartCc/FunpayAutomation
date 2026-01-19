@@ -513,7 +513,13 @@ export default function App() {
                             <Group gap="xs" mt={6}>
                               <TextInput
                                 size="xs"
-                                placeholder="Guard code"
+                                placeholder={
+                                  acc.login_status === 'guard:email'
+                                    ? 'Email code'
+                                    : acc.login_status === 'guard:twofactor'
+                                    ? '2FA code'
+                                    : 'Guard code (if needed)'
+                                }
                                 value={accountGuards[acc.id] || ''}
                                 onChange={(e) =>
                                   setAccountGuards((prev) => ({ ...prev, [acc.id]: e.target.value }))
@@ -527,8 +533,23 @@ export default function App() {
                               </Button>
                             </Group>
                           </Box>
-                          <Badge color="gray" variant="light">
-                            {acc.login_status || 'idle'}
+                          <Badge
+                            color={
+                              acc.login_status === 'online'
+                                ? 'green'
+                                : acc.login_status?.startsWith('guard:')
+                                ? 'yellow'
+                                : acc.login_status?.startsWith('error:')
+                                ? 'red'
+                                : 'gray'
+                            }
+                            variant="light"
+                          >
+                            {acc.login_status === 'guard:email'
+                              ? 'Need Email Code'
+                              : acc.login_status === 'guard:twofactor'
+                              ? 'Need 2FA Code'
+                              : acc.login_status || 'idle'}
                           </Badge>
                         </Group>
                       </Paper>

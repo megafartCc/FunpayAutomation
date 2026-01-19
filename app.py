@@ -1146,7 +1146,15 @@ def login_account(account_id: int, payload: AccountLogin, session: Session = Dep
         account.updated_at = time.time()
         session.add(account)
         session.commit()
-        raise HTTPException(status_code=401, detail=f"Login failed: {result}")
+        
+        # Provide user-friendly error messages
+        error_messages = {
+            "guard:email": "Email verification code required. Check your email and enter the code.",
+            "guard:twofactor": "2FA code required. Enter your Steam Guard code.",
+            "error:invalid_password": "Invalid username or password.",
+        }
+        error_msg = error_messages.get(account.login_status, f"Login failed: {result}")
+        raise HTTPException(status_code=401, detail=error_msg)
 
     steam_clients[account_id] = client
     app.state.steam_clients = steam_clients
