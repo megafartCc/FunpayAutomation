@@ -1113,17 +1113,51 @@ def login_account(account_id: int, payload: AccountLogin, session: Session = Dep
             session.commit()
             raise HTTPException(status_code=500, detail="Steam connect failed")
 
-    guard_code = (payload.guard_code or account.twofa_otp or "").strip() or None
+    # Determine which type of code we have
+    guard_code = (payload.guard_code or "").strip() or None
     email_code = (payload.email_code or "").strip() or None
+    
+    # If guard_code is provided but email_code is not, use guard_code for email_code
+    # (user enters code in one field, we determine which type based on current status)
     if guard_code and not email_code:
-        email_code = guard_code
+        # Check current status to determine code type
+        if account.login_status == "guard:twofactor":
+            # User is providing 2FA code
+            two_factor_code = guard_code
+            auth_code = None
+        else:
+            # Assume it's an email code (most common case)
+            auth_code = guard_code
+            two_factor_code = None
+    elif email_code:
+        # Explicit email code provided
+        auth_code = email_code
+        two_factor_code = None
+    else:
+        # No code provided - first login attempt
+        auth_code = None
+        two_factor_code = None
+    
+    # Also check if account has stored 2FA OTP
+    if not two_factor_code and account.twofa_otp:
+        two_factor_code = account.twofa_otp.strip()
+    
+    logging.info(
+        "Steam login attempt for account %s: username=%s, has_auth_code=%s, has_2fa=%s, current_status=%s",
+        account_id,
+        account.username,
+        bool(auth_code),
+        bool(two_factor_code),
+        account.login_status,
+    )
+    
     try:
         logging.info("Steam login connect ok for account %s", account_id)
         result = client.login(
             account.username,
             account.password,
-            two_factor_code=guard_code,
-            auth_code=email_code,
+            two_factor_code=two_factor_code,
+            auth_code=auth_code,
         )
     except Exception as exc:
         logging.exception("Steam login error for account %s", account_id)
@@ -1148,10 +1182,20 @@ def login_account(account_id: int, payload: AccountLogin, session: Session = Dep
             getattr(EResult, "RateLimitExceeded", None): "error:rate_limit",
         }
         
-        # Also check by numeric code (63 = InvalidLoginAuthCode typically)
+        # Also check by numeric code
         result_code = int(result) if hasattr(result, '__int__') else None
+        
+        # EResult 63 (AccountLogonDenied) can mean different things:
+        # - If we provided a code and got 63: code was invalid/expired
+        # - If we didn't provide a code and got 63: code is required
         if result_code == 63:
-            account.login_status = "error:invalid_auth_code"
+            # Check if we provided a code in this attempt
+            if auth_code or two_factor_code:
+                # Code was provided but rejected - it's invalid
+                account.login_status = "error:invalid_auth_code"
+            else:
+                # No code provided - email code is required
+                account.login_status = "guard:email"
         elif result_code == 5:
             account.login_status = "error:invalid_password"
         elif result_code == 65:
