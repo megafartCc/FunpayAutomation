@@ -91,34 +91,19 @@ export default function App() {
     }
   }
 
-  const syncMessages = async (nodeId, chatNode) => {
-    if (!nodeId && !chatNode) return null
-    try {
-      const data = await api('/api/messages/sync', {
-        method: 'POST',
-        body: JSON.stringify({ node: nodeId || null, chat_node: chatNode || null }),
-      })
-      return data
-    } catch (e) {
-      setError(e.message)
-      return null
-    }
-  }
-
   const selectDialog = async (dialog) => {
     setMessages([])
     setLoadingMsgs(true)
     setActiveChatNode(dialog.node_id)
     setActiveNode(dialog.user_id || null)
 
-    const sync = await syncMessages(dialog.user_id || null, dialog.node_id)
-    const resolvedUserId = sync?.user_id || dialog.user_id
-    if (!resolvedUserId) {
+    if (!dialog.user_id) {
+      setError('Dialog user id missing. Backend sync is required to resolve it.')
       setLoadingMsgs(false)
       return
     }
-    setActiveNode(resolvedUserId)
-    await refreshMessages(resolvedUserId, true)
+    setActiveNode(dialog.user_id)
+    await refreshMessages(dialog.user_id, true)
   }
 
   const refreshMessages = async (nodeId, withLoading = true) => {
@@ -142,7 +127,6 @@ export default function App() {
         body: JSON.stringify({ node: activeNode, message: messageText }),
       })
       setMessageText('')
-      await syncMessages(activeNode, activeChatNode)
       refreshMessages(activeNode, false)
     } catch (e) {
       setError(e.message)
