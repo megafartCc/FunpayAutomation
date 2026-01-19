@@ -51,8 +51,6 @@ export default function App() {
   const [lots, setLots] = useState([])
   const [loadingLots, setLoadingLots] = useState(false)
   const [error, setError] = useState('')
-  const [orders, setOrders] = useState([])
-  const [loadingOrders, setLoadingOrders] = useState(false)
   const [accounts, setAccounts] = useState([])
   const [accountForm, setAccountForm] = useState({
     label: '',
@@ -78,12 +76,9 @@ export default function App() {
     loadSession()
     loadDialogs()
     loadLots()
-    loadOrders()
     const dialogsTimer = setInterval(loadDialogs, 30000)
-    const ordersTimer = setInterval(loadOrders, 30000)
     return () => {
       clearInterval(dialogsTimer)
-      clearInterval(ordersTimer)
     }
   }, [])
 
@@ -121,18 +116,6 @@ export default function App() {
       setError(e.message)
     } finally {
       setLoadingLots(false)
-    }
-  }
-
-  const loadOrders = async () => {
-    setLoadingOrders(true)
-    try {
-      const data = await api('/api/orders')
-      setOrders(Array.isArray(data) ? data : [])
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setLoadingOrders(false)
     }
   }
 
@@ -376,49 +359,6 @@ export default function App() {
               }}
             >
               <Stack style={{ minHeight: 0 }}>
-                <Paper withBorder radius="md" p="md" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-                  <Group justify="space-between" mb="xs">
-                    <Text fw={700}>Active orders</Text>
-                    <Button variant="subtle" size="xs" onClick={loadOrders} loading={loadingOrders}>
-                      Refresh
-                    </Button>
-                  </Group>
-                  <ScrollArea style={{ flex: 1, minHeight: 0 }} offsetScrollbars scrollbarSize={8}>
-                    <Stack gap="sm">
-                      {orders.length === 0 && (
-                        <Text size="sm" c="dimmed">
-                          {loadingOrders ? 'Loading orders...' : 'No active orders.'}
-                        </Text>
-                      )}
-                      {orders.map((order) => (
-                        <Paper key={order.order_id} withBorder radius="md" p="sm">
-                          <Group justify="space-between" gap="xs" wrap="nowrap">
-                            <Text size="sm" fw={600} truncate>
-                              #{order.order_id}
-                            </Text>
-                            <Group gap="xs" wrap="nowrap">
-                              {order.is_new && (
-                                <Badge color="green" variant="light">
-                                  New
-                                </Badge>
-                              )}
-                              <Badge color="gray" variant="light">
-                                {order.status || 'Unknown'}
-                              </Badge>
-                            </Group>
-                          </Group>
-                          <Text size="xs" c="dimmed" truncate>
-                            {order.product || 'Order'}{order.amount ? ` x${order.amount}` : ''}
-                          </Text>
-                          <Text size="xs" c="dimmed" truncate>
-                            {order.date || ''}{order.user_id ? ` • User ${order.user_id}` : ''}
-                          </Text>
-                        </Paper>
-                      ))}
-                    </Stack>
-                  </ScrollArea>
-                </Paper>
-
                 <Paper withBorder radius="md" p="md" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
                   <Group justify="space-between" mb="xs">
                     <Text fw={700}>Active lots</Text>
