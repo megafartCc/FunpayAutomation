@@ -57,9 +57,9 @@ def init_steam_db():
 
 # Custom SteamClient with proper EventEmitter initialization
 class SteamClient(BaseSteamClient):
-    """Custom SteamClient that properly initializes the event loop and EventEmitter."""
+    """Custom SteamClient with proper EventEmitter initialization."""
     def __init__(self, *args, **kwargs):
-        # Ensure event loop exists - EventEmitter needs it
+        # Ensure event loop exists
         try:
             try:
                 loop = asyncio.get_running_loop()
@@ -73,12 +73,28 @@ class SteamClient(BaseSteamClient):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
         
-        # Initialize EventEmitter FIRST (before parent class)
-        # This ensures wait_event and other EventEmitter methods are available
-        EventEmitter.__init__(self, loop=loop)
-        
-        # Then call parent class initialization
+        # BaseSteamClient should inherit from EventEmitter
+        # But we need to ensure EventEmitter is initialized with the loop
+        # Call parent init first
         super().__init__(*args, **kwargs)
+        
+        # Then ensure EventEmitter is properly initialized
+        # Check if EventEmitter methods exist, if not, initialize manually
+        if not hasattr(self, 'wait_event'):
+            # Manually initialize EventEmitter with the loop
+            EventEmitter.__init__(self, loop=loop)
+        
+        # Double-check: if still no wait_event, monkey-patch it
+        if not hasattr(self, 'wait_event'):
+            # Last resort: bind EventEmitter methods directly
+            import types
+            ee_temp = EventEmitter(loop=loop)
+            # Copy all EventEmitter methods to self
+            for attr_name in dir(ee_temp):
+                if not attr_name.startswith('_') and callable(getattr(ee_temp, attr_name, None)):
+                    if not hasattr(self, attr_name):
+                        method = getattr(ee_temp, attr_name)
+                        setattr(self, attr_name, types.MethodType(method.__func__, self))
 
 def perform_steam_login(username, password, shared_secret):
     """Logs into Steam and returns an authenticated client object."""

@@ -1367,8 +1367,9 @@ if __name__ == "__main__":
     init_db()
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
 class SteamClient(BaseSteamClient):
+    """Custom SteamClient with proper EventEmitter initialization."""
     def __init__(self, *args, **kwargs):
-        # Ensure event loop exists - EventEmitter needs it
+        # Ensure event loop exists
         try:
             try:
                 loop = asyncio.get_running_loop()
@@ -1382,9 +1383,25 @@ class SteamClient(BaseSteamClient):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
         
-        # Initialize EventEmitter FIRST (before parent class)
-        # This ensures wait_event and other EventEmitter methods are available
-        EventEmitter.__init__(self, loop=loop)
-        
-        # Then call parent class initialization
+        # BaseSteamClient should inherit from EventEmitter
+        # But we need to ensure EventEmitter is initialized with the loop
+        # Call parent init first
         super().__init__(*args, **kwargs)
+        
+        # Then ensure EventEmitter is properly initialized
+        # Check if EventEmitter methods exist, if not, initialize manually
+        if not hasattr(self, 'wait_event'):
+            # Manually initialize EventEmitter with the loop
+            EventEmitter.__init__(self, loop=loop)
+        
+        # Double-check: if still no wait_event, monkey-patch it
+        if not hasattr(self, 'wait_event'):
+            # Last resort: bind EventEmitter methods directly
+            import types
+            ee_temp = EventEmitter(loop=loop)
+            # Copy all EventEmitter methods to self
+            for attr_name in dir(ee_temp):
+                if not attr_name.startswith('_') and callable(getattr(ee_temp, attr_name, None)):
+                    if not hasattr(self, attr_name):
+                        method = getattr(ee_temp, attr_name)
+                        setattr(self, attr_name, types.MethodType(method.__func__, self))
