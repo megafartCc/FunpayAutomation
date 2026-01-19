@@ -867,6 +867,7 @@ class AccountUpdate(SQLModel):
 
 class AccountLogin(SQLModel):
     guard_code: Optional[str] = None
+    email_code: Optional[str] = None
 
 
 @app.post("/api/messages/send")
@@ -1084,10 +1085,25 @@ def login_account(account_id: int, payload: AccountLogin, session: Session = Dep
     client = steam_clients.get(account_id) or SteamClient()
 
     guard_code = (payload.guard_code or account.twofa_otp or "").strip() or None
-    result = client.login(account.username, account.password, two_factor_code=guard_code)
+    email_code = (payload.email_code or "").strip() or None
+    try:
+        result = client.login(
+            account.username,
+            account.password,
+            two_factor_code=guard_code,
+            auth_code=email_code,
+        )
+    except Exception as exc:
+        logging.exception("Steam login error for account %s", account_id)
+        account.login_status = "error:exception"
+        account.updated_at = time.time()
+        session.add(account)
+        session.commit()
+        raise HTTPException(status_code=500, detail=str(exc))
 
     ok = result is True or result == EResult.OK
     if not ok:
+        logging.warning("Steam login failed for account %s: %s", account_id, result)
         account.login_status = f"error:{result}"
         account.updated_at = time.time()
         session.add(account)
