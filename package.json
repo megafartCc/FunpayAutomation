@@ -1,0 +1,11 @@
+{
+  "name": "funpay-automation",
+  "version": "1.0.0",
+  "scripts": {
+    "build": "cd frontend && npm install && npm run build",
+    "start": "uvicorn app:app --host 0.0.0.0 --port ${PORT:-8000}"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
