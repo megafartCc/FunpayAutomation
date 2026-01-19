@@ -5,6 +5,7 @@ import logging
 import os
 import time
 import re
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Iterable, Optional
 from urllib.parse import quote_plus, urlparse
@@ -20,7 +21,7 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Field, Session, SQLModel, create_engine, select
-from steam.client import SteamClient
+from steam.client import SteamClient as BaseSteamClient
 from steam.enums import EResult
 
 load_dotenv()
@@ -1320,3 +1321,10 @@ if __name__ == "__main__":
 
     init_db()
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+class SteamClient(BaseSteamClient):
+    def __init__(self, *args, **kwargs):
+        if not hasattr(self, "_listeners"):
+            self._listeners = defaultdict(list)
+        if not hasattr(self, "_wildcard_listeners"):
+            self._wildcard_listeners = []
+        super().__init__(*args, **kwargs)
