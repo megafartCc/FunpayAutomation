@@ -659,12 +659,14 @@ async def on_shutdown():
 # -------- API routes --------
 @app.get("/api/health")
 async def health():
-    client: Optional[FunpayClient] = getattr(app.state, "fp_client", None)
-    return {
-        "status": "ok",
-        "polling": bool(client),
-        "userId": getattr(client, "user_id", None),
-    }
+    """Health check endpoint for Railway."""
+    return {"status": "ok"}
+
+
+@app.get("/health")
+async def health_simple():
+    """Simple health check endpoint."""
+    return {"status": "ok"}
 
 
 @dataclass
