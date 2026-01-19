@@ -695,7 +695,19 @@ export default function App() {
                                         method: 'POST',
                                       })
                                       setError('')
-                                      alert(result.message || 'Rental stopped successfully')
+                                      
+                                      // Show result with warnings if any
+                                      let message = result.message || 'Rental stopped successfully'
+                                      if (result.warnings && result.warnings.length > 0) {
+                                        message += '\n\n⚠️ Warnings:\n' + result.warnings.join('\n')
+                                      }
+                                      
+                                      if (result.status === 'partial') {
+                                        alert('⚠️ PARTIAL SUCCESS\n\n' + message)
+                                      } else {
+                                        alert('✅ ' + message)
+                                      }
+                                      
                                       await loadAccounts()
                                     } catch (e) {
                                       setError(e.message)
