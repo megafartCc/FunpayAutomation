@@ -82,7 +82,7 @@ body {
   border: 1px solid #1f2937;
   border-radius: 10px;
   padding: 14px;
-  box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+  box-shadow: none;
 }
 
 .panel.flat {
@@ -136,16 +136,15 @@ button {
   border-radius: 8px;
   border: 1px solid #2563eb;
   padding: 10px 14px;
-  background: linear-gradient(180deg, #3b82f6, #2563eb);
+  background: #2563eb;
   color: #f8fafc;
   font-weight: 700;
   cursor: pointer;
-  transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
+  transition: opacity 0.12s ease, background 0.12s ease;
 }
 
 button:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 12px 25px rgba(37,99,235,0.35);
+  background: #1d4ed8;
 }
 
 button:disabled {

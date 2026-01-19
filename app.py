@@ -362,6 +362,8 @@ async def on_startup():
     app.state.poller_task = None
     if settings.initial_key:
         await start_session(settings.initial_key, settings.base_url)
+    else:
+        logging.error("FUNPAY_GOLDEN_KEY not set in env; backend will not poll without it.")
 
 
 @app.on_event("shutdown")
@@ -394,11 +396,6 @@ class SessionStatus:
     userId: Optional[str]
     baseUrl: str
 
-
-class SessionCreate(SQLModel):
-    golden_key: str
-
-
 @app.get("/api/session")
 async def session_status():
     client: Optional[FunpayClient] = getattr(app.state, "fp_client", None)
@@ -407,14 +404,6 @@ async def session_status():
         userId=getattr(client, "user_id", None),
         baseUrl=settings.base_url,
     ).__dict__
-
-
-@app.post("/api/session")
-async def session_create(payload: SessionCreate):
-    if not payload.golden_key.strip():
-        raise HTTPException(status_code=400, detail="Golden Key is required.")
-    client = await start_session(payload.golden_key.strip())
-    return {"status": "ok", "userId": client.user_id, "baseUrl": client.base_url}
 
 
 @app.get("/api/nodes")

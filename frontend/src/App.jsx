@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react'
-import { motion } from 'framer-motion'
 import './index.css'
 
 const api = async (path, options = {}) => {
@@ -27,7 +26,6 @@ const api = async (path, options = {}) => {
 
 export default function App() {
   const [session, setSession] = useState({ polling: false, userId: null, baseUrl: 'https://funpay.com' })
-  const [keyInput, setKeyInput] = useState('')
   const [nodes, setNodes] = useState([])
   const [newNode, setNewNode] = useState('')
   const [activeNode, setActiveNode] = useState(null)
@@ -36,7 +34,6 @@ export default function App() {
   const [lots, setLots] = useState([])
   const [loadingLots, setLoadingLots] = useState(false)
   const [loadingMsgs, setLoadingMsgs] = useState(false)
-  const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
   const statusLabel = useMemo(() => {
@@ -63,27 +60,6 @@ export default function App() {
       setError('')
     } catch (e) {
       setError(e.message)
-    }
-  }
-
-  const startSession = async () => {
-    if (!keyInput.trim()) {
-      setError('Enter Golden Key')
-      return
-    }
-    setBusy(true)
-    try {
-      const data = await api('/api/session', {
-        method: 'POST',
-        body: JSON.stringify({ golden_key: keyInput.trim() }),
-      })
-      setSession({ polling: true, userId: data.userId, baseUrl: data.baseUrl || 'https://funpay.com' })
-      setError('')
-      await loadNodes()
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setBusy(false)
     }
   }
 
@@ -176,27 +152,19 @@ export default function App() {
 
       <div className="layout">
         <aside className="sidebar">
-          <motion.section className="panel flat" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+          <div className="panel flat">
             <div className="panel-header">
               <div>
                 <h2>Session</h2>
-                <p className="sub">Key is stored only in memory.</p>
+                <p className="sub">Using server Golden Key (env).</p>
               </div>
               <div className="pill muted small">funpay.com</div>
             </div>
-            <label>Golden Key</label>
-            <input
-              value={keyInput}
-              onChange={(e) => setKeyInput(e.target.value)}
-              placeholder="Paste golden_key cookie"
-            />
-            <button onClick={startSession} disabled={busy}>
-              {busy ? 'Starting…' : 'Start'}
-            </button>
+            <div className="pill success small">{statusLabel.text}</div>
             {error && <div className="alert">{error}</div>}
-          </motion.section>
+          </div>
 
-          <motion.section className="panel flat" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+          <div className="panel flat">
             <div className="panel-header">
               <div>
                 <h2>Dialogs</h2>
@@ -227,11 +195,11 @@ export default function App() {
                 </div>
               ))}
             </div>
-          </motion.section>
+          </div>
         </aside>
 
         <main className="main wide">
-          <motion.section className="panel chat-panel" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+          <div className="panel chat-panel">
             <div className="panel-header">
               <div>
                 <h2>Messages {activeNode ? `· ${activeNode}` : ''}</h2>
@@ -265,9 +233,9 @@ export default function App() {
                 Send
               </button>
             </div>
-          </motion.section>
+          </div>
 
-          <motion.section className="panel lots-panel" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+          <div className="panel lots-panel">
             <div className="panel-header">
               <div>
                 <h2>Lots</h2>
@@ -300,7 +268,7 @@ export default function App() {
                 </div>
               ))}
             </div>
-          </motion.section>
+          </div>
         </main>
       </div>
     </div>
