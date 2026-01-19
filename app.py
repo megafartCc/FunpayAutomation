@@ -992,6 +992,10 @@ async def list_orders(session: Session = Depends(get_session)):
     now = time.time()
     results = []
     for item in orders:
+        status_text = (item.get("status") or "").strip()
+        status_key = status_text.lower()
+        if status_key not in {"оплачен", "paid"}:
+            continue
         order_id = item.get("order_id")
         if not order_id:
             continue
