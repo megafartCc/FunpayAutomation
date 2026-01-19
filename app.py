@@ -7,7 +7,7 @@ import time
 import re
 from dataclasses import dataclass
 from typing import Iterable, Optional
-from urllib.parse import urlparse
+from urllib.parse import quote_plus, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -103,7 +103,25 @@ def normalize_avatar_url(base_url: str, url: Optional[str]) -> Optional[str]:
 
 
 # -------- Database --------
-engine = create_engine("sqlite:///data.db", connect_args={"check_same_thread": False})
+def build_database_url() -> str:
+    explicit_url = os.getenv("DATABASE_URL") or os.getenv("FUNPAY_DATABASE_URL")
+    if explicit_url:
+        return explicit_url
+
+    mysql_host = os.getenv("MYSQLHOST")
+    if mysql_host:
+        mysql_port = os.getenv("MYSQLPORT", "3306")
+        mysql_user = quote_plus(os.getenv("MYSQLUSER", ""))
+        mysql_password = quote_plus(os.getenv("MYSQLPASSWORD", ""))
+        mysql_db = os.getenv("MYSQLDATABASE", "")
+        return f"mysql+pymysql://{mysql_user}:{mysql_password}@{mysql_host}:{mysql_port}/{mysql_db}"
+
+    return "sqlite:///data.db"
+
+
+database_url = build_database_url()
+connect_args = {"check_same_thread": False} if database_url.startswith("sqlite:///") else {}
+engine = create_engine(database_url, connect_args=connect_args)
 
 
 class Node(SQLModel, table=True):
