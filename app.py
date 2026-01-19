@@ -139,6 +139,18 @@ class Message(SQLModel, table=True):
     raw: Optional[str] = None
 
 
+class Order(SQLModel, table=True):
+    order_id: str = Field(primary_key=True)
+    user_id: Optional[str] = None
+    status: Optional[str] = None
+    product: Optional[str] = None
+    amount: Optional[int] = None
+    date: Optional[str] = None
+    url: Optional[str] = None
+    first_seen: Optional[float] = None
+    last_seen: Optional[float] = None
+
+
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)
     if settings.default_nodes:
@@ -543,6 +555,61 @@ class FunpayClient:
         save.raise_for_status()
         return True
 
+    async def get_trade_orders(self) -> list[dict]:
+        await self.ensure_ready()
+        resp = await self.client.get("/orders/trade")
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        orders: list[dict] = []
+        for item in soup.select(".tc-item"):
+            order_id = None
+            order_el = item.select_one(".tc-order")
+            if order_el:
+                order_id = order_el.get_text(strip=True).lstrip("#")
+
+            user_id = None
+            url = None
+            user_link = item.select_one(".media-user-name .pseudo-a")
+            if user_link and user_link.get("data-href"):
+                url = user_link.get("data-href")
+                user_id = url.strip("/").split("/")[-1]
+
+            date = None
+            date_el = item.select_one(".tc-date-time")
+            if date_el:
+                date = date_el.get_text(strip=True)
+
+            status = None
+            status_el = item.select_one(".tc-status")
+            if status_el:
+                status = status_el.get_text(strip=True)
+
+            product_raw = ""
+            product_el = item.select_one(".order-desc div")
+            if product_el:
+                product_raw = product_el.get_text(strip=True)
+
+            amount = 1
+            product = product_raw
+            if product_raw and "," in product_raw:
+                match = re.match(r"^(.*?),\s*(\d+)\D*$", product_raw)
+                if match:
+                    product = match.group(1).strip()
+                    amount = int(match.group(2))
+
+            orders.append(
+                {
+                    "order_id": order_id,
+                    "url": url,
+                    "user_id": user_id,
+                    "date": date,
+                    "status": status,
+                    "product": product,
+                    "amount": amount,
+                }
+            )
+        return orders
+
 
 def extract_app_data(html: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
@@ -914,6 +981,48 @@ async def list_lots():
         raise HTTPException(status_code=400, detail="No active session. Set Golden Key first.")
     offers = await client.get_offers()
     return offers
+
+
+@app.get("/api/orders")
+async def list_orders(session: Session = Depends(get_session)):
+    client: Optional[FunpayClient] = getattr(app.state, "fp_client", None)
+    if not client:
+        raise HTTPException(status_code=400, detail="No active session. Set Golden Key first.")
+    orders = await client.get_trade_orders()
+    now = time.time()
+    results = []
+    for item in orders:
+        order_id = item.get("order_id")
+        if not order_id:
+            continue
+        existing = session.get(Order, order_id)
+        is_new = existing is None
+        if not existing:
+            existing = Order(order_id=order_id, first_seen=now)
+        existing.user_id = item.get("user_id")
+        existing.status = item.get("status")
+        existing.product = item.get("product")
+        existing.amount = item.get("amount")
+        existing.date = item.get("date")
+        existing.url = item.get("url")
+        existing.last_seen = now
+        session.merge(existing)
+        results.append(
+            {
+                "order_id": order_id,
+                "user_id": existing.user_id,
+                "status": existing.status,
+                "product": existing.product,
+                "amount": existing.amount,
+                "date": existing.date,
+                "url": existing.url,
+                "is_new": is_new,
+                "first_seen": existing.first_seen,
+                "last_seen": existing.last_seen,
+            }
+        )
+    session.commit()
+    return results
 
 
 @app.get("/api/avatar")

@@ -5,12 +5,15 @@ import {
   Badge,
   Box,
   Button,
+  Divider,
   Group,
   Paper,
+  PasswordInput,
   ScrollArea,
   Stack,
   Text,
   Textarea,
+  TextInput,
 } from '@mantine/core'
 import { useMediaQuery } from '@mantine/hooks'
 
@@ -48,6 +51,15 @@ export default function App() {
   const [lots, setLots] = useState([])
   const [loadingLots, setLoadingLots] = useState(false)
   const [error, setError] = useState('')
+  const [orders, setOrders] = useState([])
+  const [loadingOrders, setLoadingOrders] = useState(false)
+  const [accounts, setAccounts] = useState([])
+  const [accountForm, setAccountForm] = useState({
+    label: '',
+    username: '',
+    password: '',
+    guard: '',
+  })
 
   const isNarrow = useMediaQuery('(max-width: 900px)')
   const statusLabel = useMemo(() => {
@@ -65,8 +77,13 @@ export default function App() {
     loadSession()
     loadDialogs()
     loadLots()
-    const timer = setInterval(loadDialogs, 30000)
-    return () => clearInterval(timer)
+    loadOrders()
+    const dialogsTimer = setInterval(loadDialogs, 30000)
+    const ordersTimer = setInterval(loadOrders, 30000)
+    return () => {
+      clearInterval(dialogsTimer)
+      clearInterval(ordersTimer)
+    }
   }, [])
 
   useEffect(() => {
@@ -103,6 +120,18 @@ export default function App() {
       setError(e.message)
     } finally {
       setLoadingLots(false)
+    }
+  }
+
+  const loadOrders = async () => {
+    setLoadingOrders(true)
+    try {
+      const data = await api('/api/orders')
+      setOrders(Array.isArray(data) ? data : [])
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoadingOrders(false)
     }
   }
 
@@ -162,6 +191,18 @@ export default function App() {
     } catch (e) {
       setError(e.message)
     }
+  }
+
+  const addAccount = () => {
+    if (!accountForm.username.trim()) return
+    const newAccount = {
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      label: accountForm.label.trim() || accountForm.username.trim(),
+      username: accountForm.username.trim(),
+      status: 'Not connected',
+    }
+    setAccounts((prev) => [newAccount, ...prev])
+    setAccountForm({ label: '', username: '', password: '', guard: '' })
   }
 
   const activeDialog = dialogs.find((d) => d.node_id === activeChatNode)
@@ -325,46 +366,159 @@ export default function App() {
           </Paper>
 
           {!isNarrow && (
-            <Paper withBorder radius="md" p="md" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-              <Group justify="space-between" mb="xs">
-                <Text fw={700}>Active lots</Text>
-                <Button variant="subtle" size="xs" onClick={loadLots} loading={loadingLots}>
-                  Refresh
-                </Button>
-              </Group>
-              <ScrollArea style={{ flex: 1, minHeight: 0 }} offsetScrollbars scrollbarSize={8}>
-                <Stack gap="sm">
-                  {lots.length === 0 && (
-                    <Text size="sm" c="dimmed">
-                      {loadingLots ? 'Loading lots...' : 'No lots available.'}
-                    </Text>
-                  )}
-                  {lots.map((group) => (
-                    <Paper key={group.node || group.group_name} withBorder radius="md" p="sm">
-                      <Text fw={600} size="sm" mb={4}>
-                        {group.group_name || 'Group'}
-                      </Text>
-                      <Stack gap={6}>
-                        {(group.offers || []).map((offer) => (
-                          <Group
-                            key={`${group.node || group.group_name}-${offer.id || offer.name}`}
-                            justify="space-between"
-                            wrap="nowrap"
-                          >
-                            <Text size="xs" truncate>
-                              {offer.name || 'Offer'}
-                            </Text>
-                            <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
-                              {offer.price || ''}
-                            </Text>
-                          </Group>
-                        ))}
-                      </Stack>
-                    </Paper>
-                  ))}
+            <Stack style={{ minHeight: 0 }}>
+              <Paper withBorder radius="md" p="md" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                <Group justify="space-between" mb="xs">
+                  <Text fw={700}>Accounts</Text>
+                  <Badge color="gray" variant="light">
+                    UI only
+                  </Badge>
+                </Group>
+                <Stack gap="xs">
+                  <TextInput
+                    label="Label"
+                    placeholder="Main account"
+                    value={accountForm.label}
+                    onChange={(e) => setAccountForm((prev) => ({ ...prev, label: e.target.value }))}
+                  />
+                  <TextInput
+                    label="Username"
+                    placeholder="steam_login"
+                    value={accountForm.username}
+                    onChange={(e) => setAccountForm((prev) => ({ ...prev, username: e.target.value }))}
+                  />
+                  <PasswordInput
+                    label="Password"
+                    placeholder="Not stored"
+                    value={accountForm.password}
+                    onChange={(e) => setAccountForm((prev) => ({ ...prev, password: e.target.value }))}
+                  />
+                  <TextInput
+                    label="Steam Guard code"
+                    placeholder="12345"
+                    value={accountForm.guard}
+                    onChange={(e) => setAccountForm((prev) => ({ ...prev, guard: e.target.value }))}
+                  />
+                  <Button onClick={addAccount} disabled={!accountForm.username.trim()}>
+                    Add account
+                  </Button>
+                  <Text size="xs" c="dimmed">
+                    Credentials are not saved. Hook a backend to actually log in.
+                  </Text>
                 </Stack>
-              </ScrollArea>
-            </Paper>
+                <Divider my="sm" />
+                <ScrollArea style={{ flex: 1, minHeight: 0 }} offsetScrollbars scrollbarSize={8}>
+                  <Stack gap="sm">
+                    {accounts.length === 0 && (
+                      <Text size="sm" c="dimmed">
+                        No accounts yet.
+                      </Text>
+                    )}
+                    {accounts.map((acc) => (
+                      <Paper key={acc.id} withBorder radius="md" p="sm">
+                        <Group justify="space-between" wrap="nowrap">
+                          <Box style={{ minWidth: 0 }}>
+                            <Text size="sm" fw={600} truncate>
+                              {acc.label}
+                            </Text>
+                            <Text size="xs" c="dimmed" truncate>
+                              {acc.username}
+                            </Text>
+                          </Box>
+                          <Badge color="gray" variant="light">
+                            {acc.status}
+                          </Badge>
+                        </Group>
+                      </Paper>
+                    ))}
+                  </Stack>
+                </ScrollArea>
+              </Paper>
+
+              <Paper withBorder radius="md" p="md" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                <Group justify="space-between" mb="xs">
+                  <Text fw={700}>Active orders</Text>
+                  <Button variant="subtle" size="xs" onClick={loadOrders} loading={loadingOrders}>
+                    Refresh
+                  </Button>
+                </Group>
+                <ScrollArea style={{ flex: 1, minHeight: 0 }} offsetScrollbars scrollbarSize={8}>
+                  <Stack gap="sm">
+                    {orders.length === 0 && (
+                      <Text size="sm" c="dimmed">
+                        {loadingOrders ? 'Loading orders...' : 'No active orders.'}
+                      </Text>
+                    )}
+                    {orders.map((order) => (
+                      <Paper key={order.order_id} withBorder radius="md" p="sm">
+                        <Group justify="space-between" gap="xs" wrap="nowrap">
+                          <Text size="sm" fw={600} truncate>
+                            #{order.order_id}
+                          </Text>
+                          <Group gap="xs" wrap="nowrap">
+                            {order.is_new && (
+                              <Badge color="green" variant="light">
+                                New
+                              </Badge>
+                            )}
+                            <Badge color="gray" variant="light">
+                              {order.status || 'Unknown'}
+                            </Badge>
+                          </Group>
+                        </Group>
+                        <Text size="xs" c="dimmed" truncate>
+                          {order.product || 'Order'}{order.amount ? ` x${order.amount}` : ''}
+                        </Text>
+                        <Text size="xs" c="dimmed" truncate>
+                          {order.date || ''}{order.user_id ? ` • User ${order.user_id}` : ''}
+                        </Text>
+                      </Paper>
+                    ))}
+                  </Stack>
+                </ScrollArea>
+              </Paper>
+
+              <Paper withBorder radius="md" p="md" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                <Group justify="space-between" mb="xs">
+                  <Text fw={700}>Active lots</Text>
+                  <Button variant="subtle" size="xs" onClick={loadLots} loading={loadingLots}>
+                    Refresh
+                  </Button>
+                </Group>
+                <ScrollArea style={{ flex: 1, minHeight: 0 }} offsetScrollbars scrollbarSize={8}>
+                  <Stack gap="sm">
+                    {lots.length === 0 && (
+                      <Text size="sm" c="dimmed">
+                        {loadingLots ? 'Loading lots...' : 'No lots available.'}
+                      </Text>
+                    )}
+                    {lots.map((group) => (
+                      <Paper key={group.node || group.group_name} withBorder radius="md" p="sm">
+                        <Text fw={600} size="sm" mb={4}>
+                          {group.group_name || 'Group'}
+                        </Text>
+                        <Stack gap={6}>
+                          {(group.offers || []).map((offer) => (
+                            <Group
+                              key={`${group.node || group.group_name}-${offer.id || offer.name}`}
+                              justify="space-between"
+                              wrap="nowrap"
+                            >
+                              <Text size="xs" truncate>
+                                {offer.name || 'Offer'}
+                              </Text>
+                              <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
+                                {offer.price || ''}
+                              </Text>
+                            </Group>
+                          ))}
+                        </Stack>
+                      </Paper>
+                    ))}
+                  </Stack>
+                </ScrollArea>
+              </Paper>
+            </Stack>
           )}
         </Box>
       </AppShell.Main>
