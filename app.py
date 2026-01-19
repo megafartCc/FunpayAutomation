@@ -1407,31 +1407,66 @@ async def stop_rental(account_id: int, session: Session = Depends(get_session)):
                                 results["password_changed"] = True
                                 logging.info("Password changed successfully for account %s (stop rental)", account_id)
                             
-                            # Deauthorize all devices
+                            # Deauthorize all devices - try multiple endpoints
                             try:
                                 def _revoke_devices():
-                                    revoke_data = {
-                                        'sessionid': sessionid,
-                                        'revokeall': '1'
-                                    }
-                                    endpoints = [
-                                        'https://store.steampowered.com/account/revokeauthorizeddevices',
-                                        'https://steamcommunity.com/devices/revoke',
+                                    # Try the Steam Guard manage endpoint first
+                                    # This is the official "Deauthorize all other devices" endpoint
+                                    endpoints_to_try = [
+                                        # Steam Guard manage page - deauthorize all
+                                        ('https://store.steampowered.com/twofactor/manage_action', {
+                                            'sessionid': sessionid,
+                                            'action': 'deauthorize_all',
+                                            'revokeall': '1'
+                                        }),
+                                        # Alternative endpoint
+                                        ('https://store.steampowered.com/account/revokeauthorizeddevices', {
+                                            'sessionid': sessionid,
+                                            'revokeall': '1'
+                                        }),
+                                        # Steam Community endpoint
+                                        ('https://steamcommunity.com/devices/revoke', {
+                                            'sessionid': sessionid,
+                                            'revokeall': '1'
+                                        }),
+                                        # Try with just sessionid
+                                        ('https://store.steampowered.com/twofactor/manage', {
+                                            'sessionid': sessionid,
+                                            'revokeall': '1'
+                                        }),
                                     ]
-                                    for endpoint in endpoints:
+                                    
+                                    for endpoint, data in endpoints_to_try:
                                         try:
-                                            resp = web_session.post(endpoint, data=revoke_data, timeout=30)
-                                            if resp.status_code == 200:
-                                                return True
-                                        except:
+                                            # First, try to GET the page to get any CSRF tokens
+                                            get_resp = web_session.get(endpoint.split('_action')[0] if '_action' in endpoint else endpoint.replace('/manage_action', '/manage'), timeout=30)
+                                            if get_resp.status_code == 200:
+                                                # Try to extract CSRF token if needed
+                                                import re
+                                                csrf_match = re.search(r'name="csrf_token"\s+value="([^"]+)"', get_resp.text)
+                                                if csrf_match:
+                                                    data['csrf_token'] = csrf_match.group(1)
+                                                
+                                                # Now POST
+                                                resp = web_session.post(endpoint, data=data, timeout=30, allow_redirects=True)
+                                                logging.info("Deauthorize attempt to %s returned status %s", endpoint, resp.status_code)
+                                                if resp.status_code in [200, 302]:  # 302 is redirect, might be success
+                                                    # Check if response indicates success
+                                                    if 'deauthorized' in resp.text.lower() or 'success' in resp.text.lower() or resp.status_code == 302:
+                                                        return True
+                                        except Exception as e:
+                                            logging.debug("Endpoint %s failed: %s", endpoint, e)
                                             continue
                                     return False
                                 
                                 if await asyncio.to_thread(_revoke_devices):
                                     results["devices_deauthorized"] = True
                                     logging.info("Devices deauthorized for account %s (stop rental)", account_id)
+                                else:
+                                    logging.warning("All deauthorize endpoints failed for account %s", account_id)
                             except Exception as e:
                                 logging.warning("Failed to deauthorize devices: %s", e)
+                                logging.exception("Full traceback:")
                     except Exception as e:
                         logging.warning("Failed to change password via web session: %s", e)
                 
