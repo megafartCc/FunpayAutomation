@@ -557,9 +557,18 @@ class FunpayClient:
 
     async def get_trade_orders(self) -> list[dict]:
         await self.ensure_ready()
-        resp = await self.client.get("/orders/trade")
-        resp.raise_for_status()
+        resp = None
+        try:
+            resp = await self.client.get("/orders/sell")
+            resp.raise_for_status()
+        except httpx.HTTPStatusError:
+            resp = await self.client.get("/orders/trade")
+            resp.raise_for_status()
+
         soup = BeautifulSoup(resp.text, "html.parser")
+        header_text = " ".join(th.get_text(" ", strip=True) for th in soup.select("th, .tc-th"))
+        header_text = header_text.lower()
+        page_is_sales = "покупатель" in header_text
         orders: list[dict] = []
         for item in soup.select(".tc-item"):
             order_id = None
@@ -606,6 +615,7 @@ class FunpayClient:
                     "status": status,
                     "product": product,
                     "amount": amount,
+                    "page_is_sales": page_is_sales,
                 }
             )
         return orders
@@ -995,6 +1005,8 @@ async def list_orders(session: Session = Depends(get_session)):
         status_text = (item.get("status") or "").strip()
         status_key = status_text.lower()
         if status_key not in {"оплачен", "paid"}:
+            continue
+        if not item.get("page_is_sales"):
             continue
         order_id = item.get("order_id")
         if not order_id:
