@@ -1284,16 +1284,44 @@ async def list_dialogs(
     if now - cached_ts < 20 and cached_dialogs:
         dialogs = cached_dialogs
     else:
-        try:
-            dialogs = await client.get_dialogs()
-            list_cache["data"] = dialogs
-            list_cache["ts"] = now
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 429 and cached_dialogs:
-                dialogs = cached_dialogs
+        # Try multiple times with better error handling (AUTO-STEAM-RENT style)
+        last_error = None
+        for attempt in range(3):
+            try:
+                dialogs = await client.get_dialogs()
+                list_cache["data"] = dialogs
                 list_cache["ts"] = now
-            else:
-                raise HTTPException(status_code=502, detail="FunPay rate limited. Try again soon.")
+                break  # Success
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                if exc.response.status_code == 429:
+                    if cached_dialogs:
+                        dialogs = cached_dialogs
+                        list_cache["ts"] = now
+                        break
+                    if attempt < 2:
+                        await asyncio.sleep(5)
+                        continue
+                    raise HTTPException(status_code=502, detail="FunPay rate limited. Try again soon.")
+                elif exc.response.status_code == 401:
+                    raise HTTPException(status_code=401, detail="Unauthorized. Check Golden Key.")
+                else:
+                    if attempt < 2:
+                        await asyncio.sleep(1)
+                        continue
+                    raise HTTPException(status_code=502, detail=f"FunPay error: {exc}")
+            except Exception as exc:
+                last_error = exc
+                if attempt < 2:
+                    await asyncio.sleep(1)
+                    continue
+                # On final failure, use cached if available
+                if cached_dialogs:
+                    dialogs = cached_dialogs
+                    list_cache["ts"] = now
+                    logging.warning("Using cached dialogs after error: %s", exc)
+                else:
+                    raise HTTPException(status_code=500, detail=f"Failed to load dialogs: {exc}")
     cache: dict = getattr(app.state, "dialog_cache", {})
     ttl = getattr(app.state, "dialog_cache_ttl", 900)
     result = []
