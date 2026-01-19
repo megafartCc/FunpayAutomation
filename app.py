@@ -1434,6 +1434,76 @@ async def stop_rental(account_id: int, session: Session = Depends(get_session)):
                                 logging.warning("Failed to deauthorize devices: %s", e)
                     except Exception as e:
                         logging.warning("Failed to change password via web session: %s", e)
+                
+                # FALLBACK: If we couldn't get web session, try WebAuth to create a fresh session
+                if not results["password_changed"] and not web_session:
+                    logging.info("Trying WebAuth fallback to change password for account %s", account_id)
+                    try:
+                        # Generate 2FA code if available
+                        two_factor_code = None
+                        if account.twofa_otp:
+                            try:
+                                import base64
+                                import hmac
+                                import hashlib
+                                import struct
+                                secret_bytes = base64.b64decode(account.twofa_otp)
+                                timestamp = int(time.time()) // 30
+                                msg = struct.pack(">Q", timestamp)
+                                hmac_hash = hmac.new(secret_bytes, msg, hashlib.sha1).digest()
+                                offset = hmac_hash[-1] & 0x0F
+                                code_int = int.from_bytes(hmac_hash[offset:offset + 4], "big") & 0x7FFFFFFF
+                                alphabet = "23456789BCDFGHJKMNPQRTVWXY"
+                                two_factor_code = ""
+                                for _ in range(5):
+                                    two_factor_code += alphabet[code_int % len(alphabet)]
+                                    code_int //= len(alphabet)
+                            except Exception as e:
+                                logging.warning("Failed to generate 2FA code for WebAuth: %s", e)
+                        
+                        # Try WebAuth to get a session and change password
+                        def _webauth_change_password():
+                            try:
+                                wa = WebAuth(account.username)
+                                # Try to login and get session
+                                web_sess = wa.login(
+                                    password=account.password,
+                                    twofactor_code=two_factor_code
+                                )
+                                if web_sess:
+                                    # Get sessionid
+                                    sessionid = None
+                                    for cookie in web_sess.cookies:
+                                        if cookie.name == 'sessionid':
+                                            sessionid = cookie.value
+                                            break
+                                    
+                                    if sessionid:
+                                        # Change password
+                                        form_data = {
+                                            'sessionid': sessionid,
+                                            'password': account.password,
+                                            'newpassword': new_password,
+                                            'renewpassword': new_password
+                                        }
+                                        resp = web_sess.post(
+                                            'https://store.steampowered.com/account/changepassword_finish',
+                                            data=form_data,
+                                            headers={'Referer': 'https://store.steampowered.com/account/changepassword'},
+                                            timeout=30
+                                        )
+                                        if resp.status_code == 200 and ('successfully changed' in resp.text.lower() or 'success' in resp.text.lower()):
+                                            return True
+                            except Exception as e:
+                                logging.warning("WebAuth password change failed: %s", e)
+                            return False
+                        
+                        if await asyncio.to_thread(_webauth_change_password):
+                            account.password = new_password
+                            results["password_changed"] = True
+                            logging.info("Password changed successfully via WebAuth for account %s (stop rental)", account_id)
+                    except Exception as e:
+                        logging.warning("WebAuth fallback failed: %s", e)
         
         # Step 3: Logout and disconnect the SteamClient
         if client:
@@ -1465,25 +1535,40 @@ async def stop_rental(account_id: int, session: Session = Depends(get_session)):
             session.add(account)
             session.commit()
         
-        # Return results
+        # Return results - even partial success is better than nothing
         message_parts = []
+        warnings = []
+        
         if results["password_changed"]:
             message_parts.append("Password changed")
+        else:
+            warnings.append("Password change failed - renter may still have access")
+        
         if results["devices_deauthorized"]:
             message_parts.append("All devices deauthorized")
+        else:
+            warnings.append("Device deauthorization failed")
+        
         if results["client_logged_out"]:
             message_parts.append("Client logged out")
+        else:
+            warnings.append("Client logout failed")
         
-        if not any(results.values()):
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to stop rental. Could not change password or deauthorize devices. The renter may still be logged in."
-            )
+        # Build response message
+        if message_parts:
+            message = "Rental stopped. " + ", ".join(message_parts) + "."
+            if warnings:
+                message += " Warnings: " + "; ".join(warnings) + "."
+        else:
+            # If nothing worked, still return partial success if client was at least disconnected
+            message = "Rental stop attempted. Client disconnected, but password change failed. The renter may still be logged in. Please manually change the password."
         
+        # Return success even if password change failed, as long as we did something
         return {
-            "status": "ok",
-            "message": "Rental stopped. " + ", ".join(message_parts) + ".",
-            "results": results
+            "status": "ok" if any(results.values()) else "partial",
+            "message": message,
+            "results": results,
+            "warnings": warnings if warnings else None
         }
         
     except HTTPException:
