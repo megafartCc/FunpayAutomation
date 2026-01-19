@@ -283,11 +283,17 @@ export default function App() {
                 }}
                 placeholder="Write a message..."
                 autosize
-                minRows={2}
-                maxRows={4}
+                minRows={3}
+                maxRows={5}
                 style={{ flex: 1 }}
               />
-              <Button onClick={sendMessage} disabled={!activeNode} style={{ alignSelf: 'stretch' }}>
+              <Button
+                onClick={sendMessage}
+                disabled={!activeNode}
+                h="100%"
+                style={{ alignSelf: 'stretch' }}
+                styles={{ root: { height: '100%' } }}
+              >
                 Send
               </Button>
             </Group>

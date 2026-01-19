@@ -89,6 +89,18 @@ def parse_message_html(html: str) -> ParsedMessage:
     )
 
 
+def normalize_avatar_url(base_url: str, url: Optional[str]) -> Optional[str]:
+    if not url:
+        return None
+    if url.startswith("http://") or url.startswith("https://"):
+        return url
+    if url.startswith("//"):
+        return f"{base_url.split(':', 1)[0]}:{url}"
+    if url.startswith("/"):
+        return f"{base_url.rstrip('/')}{url}"
+    return url
+
+
 # -------- Database --------
 engine = create_engine("sqlite:///data.db", connect_args={"check_same_thread": False})
 
@@ -313,6 +325,7 @@ class FunpayClient:
                     match = re.search(r"url\\(([^)]+)\\)", style)
                     if match:
                         avatar_url = match.group(1).strip("'\"")
+            avatar_url = normalize_avatar_url(self.base_url, avatar_url)
 
             dialogs.append(
                 {
@@ -360,6 +373,7 @@ class FunpayClient:
                 match = re.search(r"url\\(([^)]+)\\)", style)
                 if match:
                     avatar_url = match.group(1).strip("'\"")
+        avatar_url = normalize_avatar_url(self.base_url, avatar_url)
 
         return {"user_id": user_id, "name": name, "avatar": avatar_url}
 
