@@ -188,10 +188,10 @@ export default function App() {
             display: 'grid',
             gridTemplateColumns: isNarrow
               ? '1fr'
-              : '320px minmax(520px, 1fr) minmax(260px, 320px)',
+              : '280px minmax(700px, 1fr) minmax(240px, 280px)',
             gridTemplateRows: isNarrow ? 'minmax(0, 1fr) minmax(0, 1fr)' : '1fr',
             gap: 16,
-            maxWidth: 1200,
+            maxWidth: 1400,
             margin: '0 auto',
           }}
         >
