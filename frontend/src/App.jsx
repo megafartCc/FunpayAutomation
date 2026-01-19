@@ -45,6 +45,8 @@ export default function App() {
   const [messages, setMessages] = useState([])
   const [messageText, setMessageText] = useState('')
   const [loadingMsgs, setLoadingMsgs] = useState(false)
+  const [lots, setLots] = useState([])
+  const [loadingLots, setLoadingLots] = useState(false)
   const [error, setError] = useState('')
 
   const isNarrow = useMediaQuery('(max-width: 900px)')
@@ -62,6 +64,7 @@ export default function App() {
   useEffect(() => {
     loadSession()
     loadDialogs()
+    loadLots()
     const timer = setInterval(loadDialogs, 30000)
     return () => clearInterval(timer)
   }, [])
@@ -88,6 +91,18 @@ export default function App() {
       setDialogs(data)
     } catch (e) {
       setError(e.message)
+    }
+  }
+
+  const loadLots = async () => {
+    setLoadingLots(true)
+    try {
+      const data = await api('/api/lots')
+      setLots(Array.isArray(data) ? data : [])
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setLoadingLots(false)
     }
   }
 
@@ -171,7 +186,9 @@ export default function App() {
           style={{
             height: '100%',
             display: 'grid',
-            gridTemplateColumns: isNarrow ? '1fr' : '320px minmax(520px, 1fr)',
+            gridTemplateColumns: isNarrow
+              ? '1fr'
+              : '320px minmax(520px, 1fr) minmax(260px, 320px)',
             gridTemplateRows: isNarrow ? 'minmax(0, 1fr) minmax(0, 1fr)' : '1fr',
             gap: 16,
             maxWidth: 1200,
@@ -210,7 +227,12 @@ export default function App() {
                       }}
                     >
                       <Group align="flex-start" gap="sm" wrap="nowrap">
-                        <Avatar src={d.avatar} radius="xl" color="gray">
+                        <Avatar
+                          src={d.avatar}
+                          radius="xl"
+                          color="gray"
+                          imageProps={{ referrerPolicy: 'no-referrer', loading: 'eager' }}
+                        >
                           {letter}
                         </Avatar>
                         <Box style={{ flex: 1, minWidth: 0 }}>
@@ -298,6 +320,49 @@ export default function App() {
               </Button>
             </Group>
           </Paper>
+
+          {!isNarrow && (
+            <Paper withBorder radius="md" p="md" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+              <Group justify="space-between" mb="xs">
+                <Text fw={700}>Active lots</Text>
+                <Button variant="subtle" size="xs" onClick={loadLots} loading={loadingLots}>
+                  Refresh
+                </Button>
+              </Group>
+              <ScrollArea style={{ flex: 1, minHeight: 0 }} offsetScrollbars scrollbarSize={8}>
+                <Stack gap="sm">
+                  {lots.length === 0 && (
+                    <Text size="sm" c="dimmed">
+                      {loadingLots ? 'Loading lots...' : 'No lots available.'}
+                    </Text>
+                  )}
+                  {lots.map((group) => (
+                    <Paper key={group.node || group.group_name} withBorder radius="md" p="sm">
+                      <Text fw={600} size="sm" mb={4}>
+                        {group.group_name || 'Group'}
+                      </Text>
+                      <Stack gap={6}>
+                        {(group.offers || []).map((offer) => (
+                          <Group
+                            key={`${group.node || group.group_name}-${offer.id || offer.name}`}
+                            justify="space-between"
+                            wrap="nowrap"
+                          >
+                            <Text size="xs" truncate>
+                              {offer.name || 'Offer'}
+                            </Text>
+                            <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
+                              {offer.price || ''}
+                            </Text>
+                          </Group>
+                        ))}
+                      </Stack>
+                    </Paper>
+                  ))}
+                </Stack>
+              </ScrollArea>
+            </Paper>
+          )}
         </Box>
       </AppShell.Main>
     </AppShell>
