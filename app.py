@@ -622,7 +622,7 @@ app = FastAPI(title="Funpay Automation", version="0.2.0")
 
 @app.on_event("startup")
 async def on_startup():
-    init_db()
+    # Initialize state first (non-blocking)
     app.state.stop_event = asyncio.Event()
     app.state.fp_client: Optional[FunpayClient] = None
     app.state.poller_task = None
@@ -632,10 +632,21 @@ async def on_startup():
     app.state.dialog_cache = {}
     app.state.dialog_cache_ttl = 900
     app.state.dialog_list_cache = {"ts": 0.0, "data": []}
+    
+    # Initialize database (with error handling)
+    try:
+        init_db()
+    except Exception as e:
+        logging.warning("Database initialization warning (non-fatal): %s", e)
+    
+    # Start session in background if key is provided
     if settings.initial_key:
-        await start_session(settings.initial_key, settings.base_url)
+        try:
+            await start_session(settings.initial_key, settings.base_url)
+        except Exception as e:
+            logging.warning("Failed to start initial session (non-fatal): %s", e)
     else:
-        logging.error("FUNPAY_GOLDEN_KEY not set in env; backend will not poll without it.")
+        logging.info("FUNPAY_GOLDEN_KEY not set in env; backend will not poll without it.")
 
 
 @app.on_event("shutdown")
