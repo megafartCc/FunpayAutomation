@@ -87,14 +87,61 @@ class ParsedMessage:
 
 
 def parse_message_html(html: str) -> ParsedMessage:
+    """
+    Parse FunPay chat message HTML with multiple selector fallbacks.
+    Improved parsing similar to AUTO-STEAM-RENT approach.
+    """
     soup = BeautifulSoup(html or "", "html.parser")
-    body_el = soup.select_one(".chat-msg-text")
-    date_el = soup.select_one(".chat-msg-date")
-    username_el = soup.select_one(".media-user-name")
+    
+    # Try multiple selectors for message body
+    body_el = (soup.select_one(".chat-msg-text") or
+              soup.select_one(".message-text") or
+              soup.select_one(".msg-text") or
+              soup.select_one(".chat-message-text") or
+              soup.select_one("[class*='msg-text']") or
+              soup.select_one("[class*='message-text']"))
+    
+    # Try multiple selectors for date/time
+    date_el = (soup.select_one(".chat-msg-date") or
+              soup.select_one(".message-date") or
+              soup.select_one(".msg-date") or
+              soup.select_one(".chat-message-date") or
+              soup.select_one("time") or
+              soup.select_one("[class*='date']") or
+              soup.select_one("[class*='time']"))
+    
+    # Try multiple selectors for username
+    username_el = (soup.select_one(".media-user-name") or
+                  soup.select_one(".user-name") or
+                  soup.select_one(".username") or
+                  soup.select_one(".chat-msg-author") or
+                  soup.select_one(".message-author") or
+                  soup.select_one("[class*='user-name']") or
+                  soup.select_one("[class*='author']"))
+    
+    # Extract body text - try multiple methods
+    body_text = None
+    if body_el:
+        body_text = body_el.get_text("\n", strip=True)
+        # If empty, try getting from inner HTML
+        if not body_text:
+            body_text = body_el.get_text(separator="\n", strip=True)
+    
+    # Extract date/time - try multiple attributes
+    created_at = None
+    if date_el:
+        created_at = (date_el.get("title") or
+                     date_el.get("datetime") or
+                     date_el.get("data-time") or
+                     date_el.get_text(strip=True))
+    
+    # Extract username
+    username = username_el.get_text(strip=True) if username_el else None
+    
     return ParsedMessage(
-        username=username_el.get_text(strip=True) if username_el else None,
-        body=body_el.get_text("\n", strip=True) if body_el else None,
-        created_at=(date_el.get("title") or date_el.get_text(strip=True)) if date_el else None,
+        username=username,
+        body=body_text,
+        created_at=created_at,
     )
 
 
@@ -361,6 +408,10 @@ class FunpayClient:
         return payload
 
     async def get_dialogs(self) -> list[dict]:
+        """
+        Get all chat dialogs from FunPay.
+        Improved parsing with multiple selectors (like AUTO-STEAM-RENT).
+        """
         await self.ensure_ready()
         if time.time() < self.dialog_backoff_until:
             return []
@@ -373,43 +424,99 @@ class FunpayClient:
             raise
         soup = BeautifulSoup(resp.text, "html.parser")
         dialogs: list[dict] = []
-        for item in soup.select(".contact-item"):
-            node_id = item.get("data-id")
+        
+        # Try multiple selectors for dialog items
+        items = (soup.select(".contact-item") or
+                soup.select(".dialog-item") or
+                soup.select(".chat-item") or
+                soup.select("[class*='contact']") or
+                soup.select("[class*='dialog']"))
+        
+        for item in items:
+            # Extract node_id - try multiple methods
+            node_id = (item.get("data-id") or
+                      item.get("data-node") or
+                      item.get("data-node-id"))
+            
             href = item.get("href", "")
             if not node_id and "node=" in href:
-                node_id = href.split("node=")[1].split("&")[0]
+                node_id = href.split("node=")[1].split("&")[0].split("#")[0]
+            
+            # Also try from data attributes
+            if not node_id:
+                node_id = (item.get("data-chat-node") or
+                          item.get("data-dialog-id"))
 
-            name_el = item.select_one(".media-user-name")
+            # Try multiple selectors for name
+            name_el = (item.select_one(".media-user-name") or
+                      item.select_one(".user-name") or
+                      item.select_one(".contact-name") or
+                      item.select_one(".dialog-name") or
+                      item.select_one("[class*='user-name']") or
+                      item.select_one("[class*='name']"))
             name = name_el.get_text(strip=True) if name_el else None
 
-            preview_el = item.select_one(".contact-item-message")
+            # Try multiple selectors for message preview
+            preview_el = (item.select_one(".contact-item-message") or
+                         item.select_one(".message-preview") or
+                         item.select_one(".preview") or
+                         item.select_one(".last-message") or
+                         item.select_one("[class*='message']") or
+                         item.select_one("[class*='preview']"))
             preview = preview_el.get_text(" ", strip=True) if preview_el else None
 
-            time_el = item.select_one(".contact-item-time")
+            # Try multiple selectors for time
+            time_el = (item.select_one(".contact-item-time") or
+                      item.select_one(".time") or
+                      item.select_one(".last-time") or
+                      item.select_one("time") or
+                      item.select_one("[class*='time']") or
+                      item.select_one("[class*='date']"))
             time_text = time_el.get_text(strip=True) if time_el else None
+            # Also try datetime attribute
+            if not time_text and time_el:
+                time_text = (time_el.get("datetime") or
+                           time_el.get("title") or
+                           time_el.get("data-time"))
 
+            # Extract avatar - try multiple methods
             avatar_url = None
             img = item.select_one("img")
-            if img and img.get("src"):
-                avatar_url = img.get("src")
-            else:
-                avatar_el = item.select_one(".avatar-photo")
+            if img:
+                avatar_url = (img.get("src") or
+                            img.get("data-src") or
+                            img.get("data-lazy-src"))
+            
+            if not avatar_url:
+                # Try from background-image style
+                avatar_el = (item.select_one(".avatar-photo") or
+                           item.select_one(".avatar") or
+                           item.select_one("[class*='avatar']"))
                 if avatar_el:
                     style = avatar_el.get("style", "")
                     match = re.search(r"url\\(([^)]+)\\)", style)
                     if match:
                         avatar_url = match.group(1).strip("'\"")
+                    # Also try background attribute
+                    if not avatar_url:
+                        avatar_url = avatar_el.get("data-bg") or avatar_el.get("data-background")
+            
             avatar_url = normalize_avatar_url(self.base_url, avatar_url)
 
-            dialogs.append(
-                {
-                    "node_id": node_id,
-                    "name": name,
-                    "preview": preview,
-                    "time": time_text,
-                    "avatar": avatar_url,
-                }
-            )
+            # Only add if we have at least node_id or name
+            if node_id or name:
+                dialogs.append(
+                    {
+                        "node_id": node_id,
+                        "name": name,
+                        "preview": preview,
+                        "time": time_text,
+                        "avatar": avatar_url,
+                    }
+                )
+        
+        # Sort by time (most recent first) if available
+        dialogs.sort(key=lambda x: x.get("time", ""), reverse=True)
         return dialogs
 
     async def get_partner_from_node(self, node_id: str) -> dict:
@@ -457,6 +564,9 @@ class FunpayClient:
         chat_node: Optional[str] = None,
         limit: int = 150,
     ) -> list[dict]:
+        """
+        Get chat history with improved parsing (like AUTO-STEAM-RENT).
+        """
         await self.ensure_ready()
         node = chat_node or get_users_node(self.user_id, other_user_id)
         limit = max(1, min(int(limit or 150), 300))
@@ -473,28 +583,69 @@ class FunpayClient:
             resp.raise_for_status()
             soup = BeautifulSoup(resp.text, "html.parser")
 
-            page_items = soup.select(".chat-msg-item[id^='message-']")
+            # Try multiple selectors for message items
+            page_items = (soup.select(".chat-msg-item[id^='message-']") or
+                         soup.select(".message-item[id^='message-']") or
+                         soup.select("[id^='message-']") or
+                         soup.select(".chat-msg-item") or
+                         soup.select(".message"))
+            
             if not page_items:
                 break
 
             page_results: list[dict] = []
             for item in page_items:
+                # Extract message ID - try multiple methods
                 msg_id_attr = item.get("id", "")
+                msg_id = None
+                
+                # Method 1: message-123 format
                 match = re.search(r"message-(\d+)", msg_id_attr)
-                if not match:
+                if match:
+                    msg_id = int(match.group(1))
+                else:
+                    # Method 2: data-id attribute
+                    msg_id = item.get("data-id") or item.get("data-message-id")
+                    if msg_id:
+                        try:
+                            msg_id = int(msg_id)
+                        except:
+                            msg_id = None
+                
+                if not msg_id or msg_id in seen_ids:
                     continue
-                msg_id = int(match.group(1))
-                if msg_id in seen_ids:
-                    continue
+                
                 seen_ids.add(msg_id)
                 parsed = parse_message_html(str(item))
 
+                # Extract author/user_id - try multiple methods
                 author = None
-                author_link = item.select_one(".chat-msg-author-link[href*='/users/']")
+                
+                # Method 1: From author link
+                author_link = (item.select_one(".chat-msg-author-link[href*='/users/']") or
+                              item.select_one("a[href*='/users/']"))
                 if author_link and author_link.get("href"):
                     author_match = re.search(r"/users/(\d+)/", author_link.get("href"))
                     if author_match:
                         author = author_match.group(1)
+                
+                # Method 2: From data attributes
+                if not author:
+                    author = (item.get("data-author-id") or
+                            item.get("data-user-id") or
+                            item.get("data-author"))
+                
+                # Method 3: From username if it matches our user_id
+                if not author and parsed.username:
+                    # Check if message is from the other user
+                    if parsed.username and other_user_id:
+                        # Try to extract from any links in the message
+                        user_links = item.select("a[href*='/users/']")
+                        for link in user_links:
+                            match = re.search(r"/users/(\d+)/", link.get("href", ""))
+                            if match:
+                                author = match.group(1)
+                                break
 
                 page_results.append(
                     {
@@ -517,6 +668,8 @@ class FunpayClient:
             last_message = oldest_id
             pages += 1
 
+        # Sort by ID (chronological order)
+        results.sort(key=lambda x: x.get("id", 0))
         return results[:limit]
 
     async def get_partner_info(self, other_user_id: str) -> dict:
