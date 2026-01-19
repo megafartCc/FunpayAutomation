@@ -264,19 +264,75 @@ class FunpayClient:
         payload = await self.runner(objects, request=request)
         return payload
 
-    async def get_partner_info(self, other_user_id: str) -> dict:
+    async def get_dialogs(self) -> list[dict]:
         await self.ensure_ready()
-        chat_node = get_users_node(self.user_id, other_user_id)
-        resp = await self.client.get(f"/chat/?node={chat_node}")
+        resp = await self.client.get("/chat/")
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        dialogs: list[dict] = []
+        for item in soup.select(".contact-item"):
+            node_id = item.get("data-id")
+            href = item.get("href", "")
+            if not node_id and "node=" in href:
+                node_id = href.split("node=")[1].split("&")[0]
+
+            name_el = item.select_one(".media-user-name")
+            name = name_el.get_text(strip=True) if name_el else None
+
+            preview_el = item.select_one(".contact-item-message")
+            preview = preview_el.get_text(" ", strip=True) if preview_el else None
+
+            time_el = item.select_one(".contact-item-time")
+            time_text = time_el.get_text(strip=True) if time_el else None
+
+            avatar_url = None
+            img = item.select_one("img")
+            if img and img.get("src"):
+                avatar_url = img.get("src")
+            else:
+                avatar_el = item.select_one(".avatar-photo")
+                if avatar_el:
+                    style = avatar_el.get("style", "")
+                    match = re.search(r"url\\(([^)]+)\\)", style)
+                    if match:
+                        avatar_url = match.group(1).strip("'\"")
+
+            dialogs.append(
+                {
+                    "node_id": node_id,
+                    "name": name,
+                    "preview": preview,
+                    "time": time_text,
+                    "avatar": avatar_url,
+                }
+            )
+        return dialogs
+
+    async def get_partner_from_node(self, node_id: str) -> dict:
+        await self.ensure_ready()
+        resp = await self.client.get(f"/chat/?node={node_id}")
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        name_el = soup.select_one(".chat-header .media-user-name a") or soup.select_one(
-            ".chat-header .media-user-name"
-        )
-        name = name_el.get_text(strip=True) if name_el else None
-
+        user_id = None
+        name = None
         avatar_url = None
+
+        link = soup.select_one(".chat-header .media-user-name a[href*='/users/']")
+        if link and link.get("href"):
+            match = re.search(r"/users/(\\d+)/", link.get("href"))
+            if match:
+                user_id = match.group(1)
+            name = link.get_text(strip=True)
+        else:
+            name_el = soup.select_one(".chat-header .media-user-name")
+            if name_el:
+                name = name_el.get_text(strip=True)
+
+        panel = soup.select_one(".param-item.chat-panel")
+        if panel and panel.get("data-id"):
+            user_id = user_id or panel.get("data-id")
+
         img = soup.select_one(".chat-header img")
         if img and img.get("src"):
             avatar_url = img.get("src")
@@ -288,7 +344,7 @@ class FunpayClient:
                 if match:
                     avatar_url = match.group(1).strip("'\"")
 
-        return {"name": name, "avatar": avatar_url}
+        return {"user_id": user_id, "name": name, "avatar": avatar_url}
 
     async def get_offers(self) -> list[dict]:
         await self.ensure_ready()
@@ -389,6 +445,8 @@ async def on_startup():
     app.state.poller_task = None
     app.state.partner_cache = {}
     app.state.partner_cache_ttl = 600
+    app.state.dialog_cache = {}
+    app.state.dialog_cache_ttl = 900
     if settings.initial_key:
         await start_session(settings.initial_key, settings.base_url)
     else:
@@ -481,6 +539,69 @@ async def list_nodes(session: Session = Depends(get_session)):
         )
 
     app.state.partner_cache = cache
+    return result
+
+
+@app.get("/api/dialogs")
+async def list_dialogs(session: Session = Depends(get_session)):
+    client: Optional[FunpayClient] = getattr(app.state, "fp_client", None)
+    if not client:
+        raise HTTPException(status_code=400, detail="No active session. Set Golden Key first.")
+
+    dialogs = await client.get_dialogs()
+    cache: dict = getattr(app.state, "dialog_cache", {})
+    ttl = getattr(app.state, "dialog_cache_ttl", 900)
+    now = time.time()
+    result = []
+
+    for dialog in dialogs:
+        node_id = dialog.get("node_id")
+        if not node_id:
+            continue
+
+        cached = cache.get(node_id)
+        user_id = None
+        name = dialog.get("name")
+        avatar = dialog.get("avatar")
+
+        if cached and now - cached.get("ts", 0) < ttl:
+            user_id = cached.get("user_id")
+            name = cached.get("name") or name
+            avatar = cached.get("avatar") or avatar
+        else:
+            try:
+                info = await client.get_partner_from_node(node_id)
+                user_id = info.get("user_id")
+                name = info.get("name") or name
+                avatar = info.get("avatar") or avatar
+                cache[node_id] = {
+                    "user_id": user_id,
+                    "name": name,
+                    "avatar": avatar,
+                    "ts": now,
+                }
+            except Exception:
+                if cached:
+                    user_id = cached.get("user_id")
+                    name = cached.get("name") or name
+                    avatar = cached.get("avatar") or avatar
+
+        if user_id and not session.get(Node, str(user_id)):
+            session.add(Node(id=str(user_id)))
+            session.commit()
+
+        result.append(
+            {
+                "node_id": node_id,
+                "user_id": user_id,
+                "name": name,
+                "avatar": avatar,
+                "preview": dialog.get("preview"),
+                "time": dialog.get("time"),
+            }
+        )
+
+    app.state.dialog_cache = cache
     return result
 
 
