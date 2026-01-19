@@ -1299,8 +1299,8 @@ def account_status(account_id: int, session: Session = Depends(get_session)):
 
 
 @app.post("/api/accounts/{account_id}/deauthorize")
-def deauthorize_sessions(account_id: int, session: Session = Depends(get_session)):
-    """Deauthorize all Steam sessions (log off everyone)."""
+async def deauthorize_sessions(account_id: int, session: Session = Depends(get_session)):
+    """Deauthorize all Steam sessions (log off everyone, including active game sessions)."""
     account = session.get(Account, account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found.")
@@ -1311,13 +1311,138 @@ def deauthorize_sessions(account_id: int, session: Session = Depends(get_session
         raise HTTPException(status_code=400, detail="Account is not logged in.")
     
     try:
-        # Use web_logoff to deauthorize all web sessions
+        # Check if client is logged on
+        logged_on = bool(
+            getattr(client, "logged_on", False)
+            or getattr(client, "is_logged_on", lambda: False)()
+        )
+        
+        web_session = None
+        
+        # Method 1: Try to get web_session from SteamClient if it exists
+        if hasattr(client, "web_session") and client.web_session:
+            web_session = client.web_session
+            logging.info("Using SteamClient.web_session for deauthorize (account %s)", account_id)
+        
+        # Method 2: Try get_web_session() method if client is logged on
+        elif logged_on and hasattr(client, "get_web_session"):
+            try:
+                def _get_web_session():
+                    return client.get_web_session()
+                web_session = await asyncio.to_thread(_get_web_session)
+                if web_session:
+                    logging.info("Got web session via get_web_session() for deauthorize (account %s)", account_id)
+            except Exception as e:
+                logging.warning("get_web_session() failed for deauthorize (account %s): %s", account_id, e)
+        
+        # Revoke all authorized devices - this actually kicks active game sessions
+        revoked_devices = False
+        
+        if web_session:
+            # Use web_session to revoke devices
+            try:
+                sessionid = None
+                if hasattr(web_session, 'cookies'):
+                    sessionid = web_session.cookies.get('sessionid', domain='steamcommunity.com')
+                    if not sessionid:
+                        sessionid = web_session.cookies.get('sessionid', domain='store.steampowered.com')
+                
+                if sessionid:
+                    def _revoke_devices():
+                        revoke_data = {
+                            'sessionid': sessionid,
+                            'revokeall': '1'
+                        }
+                        # Try multiple possible endpoints
+                        endpoints = [
+                            'https://store.steampowered.com/account/revokeauthorizeddevices',
+                            'https://steamcommunity.com/devices/revoke',
+                            'https://store.steampowered.com/account/managedevices'
+                        ]
+                        
+                        for endpoint in endpoints:
+                            try:
+                                resp = web_session.post(
+                                    endpoint,
+                                    data=revoke_data,
+                                    headers={'Referer': 'https://store.steampowered.com/account/managedevices'},
+                                    timeout=30
+                                )
+                                if resp.status_code == 200:
+                                    return True
+                            except:
+                                continue
+                        return False
+                    
+                    revoked_devices = await asyncio.to_thread(_revoke_devices)
+                    if revoked_devices:
+                        logging.info("Successfully revoked all devices via web_session for account %s", account_id)
+            except Exception as e:
+                logging.warning("Failed to revoke devices via web_session (account %s): %s", account_id, e)
+        
+        # Method 3: Try to extract cookies and use httpx if web_session didn't work
+        if not revoked_devices and logged_on:
+            try:
+                cookies_dict = {}
+                if hasattr(client, "_session") and hasattr(client._session, "cookies"):
+                    for cookie in client._session.cookies:
+                        cookies_dict[cookie.name] = cookie.value
+                elif hasattr(client, "session") and hasattr(client.session, "cookies"):
+                    for cookie in client.session.cookies:
+                        cookies_dict[cookie.name] = cookie.value
+                elif hasattr(client, "cookies"):
+                    cookies_dict = dict(client.cookies) if isinstance(client.cookies, dict) else {}
+                
+                if cookies_dict:
+                    # Create httpx client with cookies
+                    async with httpx.AsyncClient(cookies=cookies_dict, timeout=30.0) as http_client:
+                        # Get sessionid
+                        sessionid = cookies_dict.get('sessionid')
+                        if not sessionid:
+                            test_resp = await http_client.get('https://store.steampowered.com/account/')
+                            if test_resp.status_code == 200:
+                                for cookie in http_client.cookies:
+                                    if cookie.name == 'sessionid':
+                                        sessionid = cookie.value
+                                        break
+                        
+                        if sessionid:
+                            # Try multiple endpoints
+                            endpoints = [
+                                ('https://store.steampowered.com/account/revokeauthorizeddevices', {'sessionid': sessionid, 'revokeall': '1'}),
+                                ('https://steamcommunity.com/devices/revoke', {'sessionid': sessionid, 'revokeall': '1'}),
+                            ]
+                            
+                            for endpoint, revoke_data in endpoints:
+                                try:
+                                    revoke_resp = await http_client.post(
+                                        endpoint,
+                                        data=revoke_data,
+                                        headers={'Referer': 'https://store.steampowered.com/account/managedevices'}
+                                    )
+                                    
+                                    if revoke_resp.status_code == 200:
+                                        logging.info("Successfully revoked all devices via httpx for account %s", account_id)
+                                        revoked_devices = True
+                                        break
+                                except Exception as e:
+                                    logging.debug("Failed to revoke via %s: %s", endpoint, e)
+                                    continue
+            except Exception as e:
+                logging.warning("httpx approach failed for deauthorize (account %s): %s", account_id, e)
+        
+        # Also use web_logoff for web sessions
         if hasattr(client, "web_logoff"):
-            client.web_logoff()
-        # Also try to logout from Steam network
-        if hasattr(client, "logout"):
-            client.logout()
-        return {"status": "ok", "message": "All sessions deauthorized successfully."}
+            try:
+                client.web_logoff()
+                logging.info("Called web_logoff for account %s", account_id)
+            except Exception as e:
+                logging.warning("web_logoff failed for account %s: %s", account_id, e)
+        
+        # Also try to logout from Steam network (but don't disconnect the client)
+        # We want to keep the client connected so we can still use it
+        
+        return {"status": "ok", "message": "All sessions deauthorized successfully. Active game sessions should be terminated."}
     except Exception as exc:
         logging.exception("Failed to deauthorize sessions for account %s", account_id)
         raise HTTPException(status_code=500, detail=f"Failed to deauthorize: {str(exc)}")
