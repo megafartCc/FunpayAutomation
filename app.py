@@ -1076,6 +1076,7 @@ def update_account(account_id: int, payload: AccountUpdate, session: Session = D
 
 @app.post("/api/accounts/{account_id}/login")
 def login_account(account_id: int, payload: AccountLogin, session: Session = Depends(get_session)):
+    logging.info("Steam login request for account %s", account_id)
     account = session.get(Account, account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found.")
@@ -1114,7 +1115,10 @@ def login_account(account_id: int, payload: AccountLogin, session: Session = Dep
 
     guard_code = (payload.guard_code or account.twofa_otp or "").strip() or None
     email_code = (payload.email_code or "").strip() or None
+    if guard_code and not email_code:
+        email_code = guard_code
     try:
+        logging.info("Steam login connect ok for account %s", account_id)
         result = client.login(
             account.username,
             account.password,
@@ -1129,6 +1133,7 @@ def login_account(account_id: int, payload: AccountLogin, session: Session = Dep
         session.commit()
         raise HTTPException(status_code=500, detail=str(exc))
 
+    logging.info("Steam login result for account %s: %s", account_id, result)
     ok = result is True or result == EResult.OK
     if not ok:
         logging.warning("Steam login failed for account %s: %s", account_id, result)
