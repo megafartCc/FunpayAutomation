@@ -880,6 +880,10 @@ class AccountUpdate(SQLModel):
     twofa_otp: Optional[str] = None
 
 
+class ChangePasswordRequest(SQLModel):
+    new_password: str
+
+
 class AccountLogin(SQLModel):
     guard_code: Optional[str] = None
     email_code: Optional[str] = None
@@ -1352,6 +1356,71 @@ def get_2fa_code(account_id: int, session: Session = Depends(get_session)):
     except Exception as exc:
         logging.exception("Failed to generate 2FA code for account %s", account_id)
         raise HTTPException(status_code=500, detail=f"Failed to generate code: {str(exc)}")
+
+
+@app.post("/api/accounts/{account_id}/change-password")
+async def change_steam_password_endpoint(account_id: int, payload: ChangePasswordRequest, session: Session = Depends(get_session)):
+    """Change the Steam account password."""
+    account = session.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found.")
+    
+    if not account.username or not account.password:
+        raise HTTPException(status_code=400, detail="Account missing username or password.")
+    
+    steam_clients = getattr(app.state, "steam_clients", {})
+    client = steam_clients.get(account_id)
+    if not client:
+        raise HTTPException(status_code=400, detail="Account is not logged in. Please log in first.")
+    
+    new_password = payload.new_password.strip()
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters long.")
+    
+    try:
+        # Use the Steam web session to change password
+        # This is similar to the method in main.py
+        if not hasattr(client, "web_session"):
+            raise HTTPException(status_code=500, detail="Steam client does not have web session available.")
+        
+        sessionid = client.web_session.cookies.get('sessionid', domain='steamcommunity.com')
+        if not sessionid:
+            # Try to get sessionid from store domain
+            sessionid = client.web_session.cookies.get('sessionid', domain='store.steampowered.com')
+        
+        if not sessionid:
+            raise HTTPException(status_code=500, detail="Could not get Steam session ID. Please log in again.")
+        
+        form_data = {
+            'sessionid': sessionid,
+            'password': account.password,  # Current password
+            'newpassword': new_password,
+            'renewpassword': new_password
+        }
+        
+        response = client.web_session.post(
+            'https://store.steampowered.com/account/changepassword_finish',
+            data=form_data,
+            headers={'Referer': 'https://store.steampowered.com/account/changepassword'}
+        )
+        
+        if 'successfully changed' in response.text.lower():
+            # Update password in database
+            account.password = new_password
+            account.updated_at = time.time()
+            session.add(account)
+            session.commit()
+            
+            logging.info("Password changed successfully for account %s", account_id)
+            return {"status": "ok", "message": "Password changed successfully."}
+        else:
+            raise HTTPException(status_code=400, detail="Password change failed. Check your current password or try again.")
+            
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.exception("Failed to change password for account %s", account_id)
+        raise HTTPException(status_code=500, detail=f"Failed to change password: {str(exc)}")
 
 
 

@@ -9,6 +9,7 @@ import {
   Divider,
   Group,
   Loader,
+  Modal,
   Paper,
   PasswordInput,
   ScrollArea,
@@ -69,6 +70,7 @@ export default function App() {
   })
   const [accountGuards, setAccountGuards] = useState({})
   const [loggingIn, setLoggingIn] = useState({}) // Track which account is logging in
+  const [changePasswordModal, setChangePasswordModal] = useState(null) // { accountId, newPassword }
 
   const isNarrow = useMediaQuery('(max-width: 900px)')
   const isWide = useMediaQuery('(min-width: 1400px)')
@@ -710,6 +712,15 @@ export default function App() {
                                     Log Off Everyone
                                   </Button>
                                 </Group>
+                                <Button
+                                  size="sm"
+                                  variant="light"
+                                  color="blue"
+                                  onClick={() => setChangePasswordModal({ accountId: acc.id, newPassword: '' })}
+                                  fullWidth
+                                >
+                                  Change Password
+                                </Button>
                                 {acc.has_twofa_otp && (
                                   <Button
                                     size="sm"
@@ -743,6 +754,57 @@ export default function App() {
           )}
         </Box>
       </AppShell.Main>
+      
+      {/* Change Password Modal */}
+      <Modal
+        opened={changePasswordModal !== null}
+        onClose={() => setChangePasswordModal(null)}
+        title="Change Steam Password"
+        centered
+      >
+        <Stack gap="md">
+          <Text size="sm" c="dimmed">
+            Enter a new password for this Steam account. The password must be at least 8 characters long.
+          </Text>
+          <PasswordInput
+            label="New Password"
+            placeholder="Enter new password"
+            value={changePasswordModal?.newPassword || ''}
+            onChange={(e) =>
+              setChangePasswordModal((prev) => ({ ...prev, newPassword: e.target.value }))
+            }
+            required
+          />
+          <Group justify="flex-end">
+            <Button variant="subtle" onClick={() => setChangePasswordModal(null)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={async () => {
+                if (!changePasswordModal?.accountId || !changePasswordModal?.newPassword) return
+                if (changePasswordModal.newPassword.length < 8) {
+                  setError('Password must be at least 8 characters long.')
+                  return
+                }
+                try {
+                  await api(`/api/accounts/${changePasswordModal.accountId}/change-password`, {
+                    method: 'POST',
+                    body: JSON.stringify({ new_password: changePasswordModal.newPassword }),
+                  })
+                  setError('')
+                  setChangePasswordModal(null)
+                  await loadAccounts()
+                } catch (e) {
+                  setError(e.message)
+                }
+              }}
+              disabled={!changePasswordModal?.newPassword || changePasswordModal.newPassword.length < 8}
+            >
+              Change Password
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
     </AppShell>
   )
 }
