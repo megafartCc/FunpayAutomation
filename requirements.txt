@@ -14,8 +14,8 @@ requests
 APScheduler
 mysql-connector-python
 
-# Steam library
-steam==1.4.4
+# Steam library - use [client] extras for full EventEmitter support
+steam[client]==1.4.4
 eventemitter==0.2.0
 gevent==24.2.1
 protobuf==3.20.3
