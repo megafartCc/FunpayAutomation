@@ -16,6 +16,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import BigInteger, Column, text
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 from steam.client import SteamClient
 from steam.enums import EResult
@@ -170,12 +171,14 @@ def ensure_mysql_bigint() -> None:
         return
     with engine.begin() as conn:
         try:
-            conn.execute(text("ALTER TABLE message MODIFY COLUMN id BIGINT NOT NULL"))
-        except Exception:
+            conn.execute(text("ALTER TABLE message MODIFY COLUMN id BIGINT UNSIGNED NOT NULL"))
+        except Exception as exc:
+            logging.warning("Failed to alter message.id to BIGINT: %s", exc)
             pass
         try:
-            conn.execute(text("ALTER TABLE node MODIFY COLUMN last_id BIGINT NULL"))
-        except Exception:
+            conn.execute(text("ALTER TABLE node MODIFY COLUMN last_id BIGINT UNSIGNED NULL"))
+        except Exception as exc:
+            logging.warning("Failed to alter node.last_id to BIGINT: %s", exc)
             pass
 
 
@@ -919,7 +922,11 @@ async def sync_messages(payload: SyncMessages, session: Session = Depends(get_se
             created_at=item.get("created_at"),
             raw=item.get("raw"),
         )
-        session.merge(msg)
+        try:
+            session.merge(msg)
+        except IntegrityError:
+            session.rollback()
+            continue
         if mid > updated_last:
             updated_last = mid
 
@@ -1258,7 +1265,11 @@ async def poll_node(session: Session, client: FunpayClient, log: logging.Logger,
                 created_at=parsed.created_at,
                 raw=json.dumps(item, ensure_ascii=False),
             )
-            session.merge(msg)
+            try:
+                session.merge(msg)
+            except IntegrityError:
+                session.rollback()
+                continue
             inserted += 1
             if mid > new_last_id:
                 new_last_id = mid
