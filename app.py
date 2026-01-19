@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import BigInteger, Column, text
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 from steam.client import SteamClient
 from steam.enums import EResult
@@ -128,11 +129,11 @@ engine = create_engine(database_url, connect_args=connect_args)
 
 class Node(SQLModel, table=True):
     id: str = Field(primary_key=True)
-    last_id: Optional[int] = None
+    last_id: Optional[int] = Field(default=None, sa_column=Column(BigInteger))
 
 
 class Message(SQLModel, table=True):
-    id: int = Field(primary_key=True)
+    id: int = Field(primary_key=True, sa_column=Column(BigInteger))
     node_id: str = Field(primary_key=True)
     author: Optional[str] = None
     username: Optional[str] = None
@@ -155,12 +156,27 @@ class Account(SQLModel, table=True):
 
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)
+    ensure_mysql_bigint()
     if settings.default_nodes:
         with Session(engine) as session:
             for node_id in settings.default_nodes:
                 if not session.get(Node, node_id):
                     session.add(Node(id=node_id))
             session.commit()
+
+
+def ensure_mysql_bigint() -> None:
+    if engine.dialect.name != "mysql":
+        return
+    with engine.begin() as conn:
+        try:
+            conn.execute(text("ALTER TABLE message MODIFY COLUMN id BIGINT NOT NULL"))
+        except Exception:
+            pass
+        try:
+            conn.execute(text("ALTER TABLE node MODIFY COLUMN last_id BIGINT NULL"))
+        except Exception:
+            pass
 
 
 async def start_session(golden_key: str, base_url: Optional[str] = None):
