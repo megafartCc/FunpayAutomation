@@ -25,17 +25,22 @@ const api = async (path, options = {}) => {
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     ...options,
   })
+  
+  // Read response body once
+  const text = await res.text()
+  
   if (!res.ok) {
     let detail
     try {
-      const data = await res.json()
+      const data = JSON.parse(text || '{}')
       detail = data.detail || JSON.stringify(data)
     } catch {
-      detail = await res.text()
+      detail = text || res.statusText
     }
     throw new Error(detail || res.statusText)
   }
-  const text = await res.text()
+  
+  // Parse the already-read text
   try {
     return JSON.parse(text || '{}')
   } catch {
