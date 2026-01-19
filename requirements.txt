@@ -4,3 +4,4 @@ httpx==0.27.0
 sqlmodel==0.0.16
 python-dotenv==1.0.1
 beautifulsoup4==4.12.3
+steam==1.4.4
