@@ -56,6 +56,7 @@ export default function App() {
     label: '',
     username: '',
     password: '',
+    steamId: '',
     guard: '',
   })
 
@@ -76,6 +77,7 @@ export default function App() {
     loadSession()
     loadDialogs()
     loadLots()
+    loadAccounts()
     const dialogsTimer = setInterval(loadDialogs, 30000)
     return () => {
       clearInterval(dialogsTimer)
@@ -116,6 +118,15 @@ export default function App() {
       setError(e.message)
     } finally {
       setLoadingLots(false)
+    }
+  }
+
+  const loadAccounts = async () => {
+    try {
+      const data = await api('/api/accounts')
+      setAccounts(Array.isArray(data) ? data : [])
+    } catch (e) {
+      setError(e.message)
     }
   }
 
@@ -177,16 +188,25 @@ export default function App() {
     }
   }
 
-  const addAccount = () => {
-    if (!accountForm.username.trim()) return
-    const newAccount = {
-      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-      label: accountForm.label.trim() || accountForm.username.trim(),
-      username: accountForm.username.trim(),
-      status: 'Not connected',
+  const addAccount = async () => {
+    if (!accountForm.username.trim() || !accountForm.password.trim()) return
+    try {
+      await api('/api/accounts', {
+        method: 'POST',
+        body: JSON.stringify({
+          label: accountForm.label.trim() || null,
+          username: accountForm.username.trim(),
+          password: accountForm.password.trim(),
+          steam_id: accountForm.steamId.trim() || null,
+          login_status: 'idle',
+          twofa_otp: accountForm.guard.trim() || null,
+        }),
+      })
+      setAccountForm({ label: '', username: '', password: '', steamId: '', guard: '' })
+      loadAccounts()
+    } catch (e) {
+      setError(e.message)
     }
-    setAccounts((prev) => [newAccount, ...prev])
-    setAccountForm({ label: '', username: '', password: '', guard: '' })
   }
 
   const activeDialog = dialogs.find((d) => d.node_id === activeChatNode)
@@ -428,16 +448,25 @@ export default function App() {
                     onChange={(e) => setAccountForm((prev) => ({ ...prev, password: e.target.value }))}
                   />
                   <TextInput
-                    label="Steam Guard code"
+                    label="SteamID"
+                    placeholder="7656119..."
+                    value={accountForm.steamId}
+                    onChange={(e) => setAccountForm((prev) => ({ ...prev, steamId: e.target.value }))}
+                  />
+                  <TextInput
+                    label="2FA OTP"
                     placeholder="12345"
                     value={accountForm.guard}
                     onChange={(e) => setAccountForm((prev) => ({ ...prev, guard: e.target.value }))}
                   />
-                  <Button onClick={addAccount} disabled={!accountForm.username.trim()}>
+                  <Button
+                    onClick={addAccount}
+                    disabled={!accountForm.username.trim() || !accountForm.password.trim()}
+                  >
                     Add account
                   </Button>
                   <Text size="xs" c="dimmed">
-                    Credentials are not saved. Hook a backend to actually log in.
+                    Stored in database. Keep secrets secure.
                   </Text>
                 </Stack>
                 <Divider my="sm" />
@@ -453,14 +482,14 @@ export default function App() {
                         <Group justify="space-between" wrap="nowrap">
                           <Box style={{ minWidth: 0 }}>
                             <Text size="sm" fw={600} truncate>
-                              {acc.label}
+                              {acc.label || acc.username}
                             </Text>
                             <Text size="xs" c="dimmed" truncate>
-                              {acc.username}
+                              {acc.steam_id || 'SteamID not set'}
                             </Text>
                           </Box>
                           <Badge color="gray" variant="light">
-                            {acc.status}
+                            {acc.login_status || 'idle'}
                           </Badge>
                         </Group>
                       </Paper>

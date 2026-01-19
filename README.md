@@ -38,6 +38,7 @@ The backend serves the built assets from `/static` at the root path.
 - `FUNPAY_POLL_SECONDS` – polling interval for runner
 - `FUNPAY_DEFAULT_NODES` – comma-separated user IDs to start watching (optional)
 - `FUNPAY_GOLDEN_KEY` – optional initial key to auto-start session; otherwise enter via UI
+- `MYSQLHOST`, `MYSQLPORT`, `MYSQLUSER`, `MYSQLPASSWORD`, `MYSQLDATABASE` – MySQL connection for persistent storage
 
 ## Railway
 - Build frontend before deploy (`npm run build` in `frontend`) so `static/` has assets, or add a Nixpacks phase to build the frontend.

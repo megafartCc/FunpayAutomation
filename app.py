@@ -139,6 +139,18 @@ class Message(SQLModel, table=True):
     raw: Optional[str] = None
 
 
+class Account(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    label: Optional[str] = None
+    username: str
+    password: str
+    steam_id: Optional[str] = None
+    login_status: Optional[str] = None
+    twofa_otp: Optional[str] = None
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)
     if settings.default_nodes:
@@ -788,6 +800,24 @@ class UpdatePrice(SQLModel):
     price: float
 
 
+class AccountCreate(SQLModel):
+    label: Optional[str] = None
+    username: str
+    password: str
+    steam_id: Optional[str] = None
+    login_status: Optional[str] = None
+    twofa_otp: Optional[str] = None
+
+
+class AccountUpdate(SQLModel):
+    label: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    steam_id: Optional[str] = None
+    login_status: Optional[str] = None
+    twofa_otp: Optional[str] = None
+
+
 @app.post("/api/messages/send")
 async def send_message(payload: SendMessage, session: Session = Depends(get_session)):
     node_id = str(payload.node)
@@ -914,6 +944,78 @@ async def list_lots():
         raise HTTPException(status_code=400, detail="No active session. Set Golden Key first.")
     offers = await client.get_offers()
     return offers
+
+
+@app.get("/api/accounts")
+def list_accounts(session: Session = Depends(get_session)):
+    rows = session.exec(select(Account).order_by(Account.id.desc())).all()
+    return [
+        {
+            "id": row.id,
+            "label": row.label,
+            "username": row.username,
+            "steam_id": row.steam_id,
+            "login_status": row.login_status,
+            "has_password": bool(row.password),
+            "has_twofa_otp": bool(row.twofa_otp),
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
+        for row in rows
+    ]
+
+
+@app.post("/api/accounts")
+def create_account(payload: AccountCreate, session: Session = Depends(get_session)):
+    username = payload.username.strip()
+    password = payload.password.strip()
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="Username and password are required.")
+    account = Account(
+        label=payload.label,
+        username=username,
+        password=password,
+        steam_id=payload.steam_id,
+        login_status=payload.login_status or "idle",
+        twofa_otp=payload.twofa_otp,
+    )
+    session.add(account)
+    session.commit()
+    session.refresh(account)
+    return {
+        "id": account.id,
+        "label": account.label,
+        "username": account.username,
+        "steam_id": account.steam_id,
+        "login_status": account.login_status,
+        "has_password": True,
+        "has_twofa_otp": bool(account.twofa_otp),
+        "created_at": account.created_at,
+        "updated_at": account.updated_at,
+    }
+
+
+@app.put("/api/accounts/{account_id}")
+def update_account(account_id: int, payload: AccountUpdate, session: Session = Depends(get_session)):
+    account = session.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found.")
+    if payload.username is not None:
+        account.username = payload.username.strip()
+    if payload.password is not None:
+        account.password = payload.password.strip()
+    if payload.label is not None:
+        account.label = payload.label
+    if payload.steam_id is not None:
+        account.steam_id = payload.steam_id
+    if payload.login_status is not None:
+        account.login_status = payload.login_status
+    if payload.twofa_otp is not None:
+        account.twofa_otp = payload.twofa_otp
+    account.updated_at = time.time()
+    session.add(account)
+    session.commit()
+    return {"status": "ok"}
 
 
 
