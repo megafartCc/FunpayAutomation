@@ -1275,6 +1275,67 @@ def account_status(account_id: int, session: Session = Depends(get_session)):
     }
 
 
+@app.post("/api/accounts/{account_id}/deauthorize")
+def deauthorize_sessions(account_id: int, session: Session = Depends(get_session)):
+    """Deauthorize all Steam sessions (log off everyone)."""
+    account = session.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found.")
+    
+    steam_clients = getattr(app.state, "steam_clients", {})
+    client = steam_clients.get(account_id)
+    if not client:
+        raise HTTPException(status_code=400, detail="Account is not logged in.")
+    
+    try:
+        # Use web_logoff to deauthorize all web sessions
+        if hasattr(client, "web_logoff"):
+            client.web_logoff()
+        # Also try to logout from Steam network
+        if hasattr(client, "logout"):
+            client.logout()
+        return {"status": "ok", "message": "All sessions deauthorized successfully."}
+    except Exception as exc:
+        logging.exception("Failed to deauthorize sessions for account %s", account_id)
+        raise HTTPException(status_code=500, detail=f"Failed to deauthorize: {str(exc)}")
+
+
+@app.get("/api/accounts/{account_id}/code")
+def get_2fa_code(account_id: int, session: Session = Depends(get_session)):
+    """Generate a 2FA code for the account using shared_secret."""
+    account = session.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found.")
+    
+    if not account.twofa_otp:
+        raise HTTPException(status_code=400, detail="Account does not have 2FA shared_secret configured.")
+    
+    try:
+        import base64
+        import hmac
+        import hashlib
+        import struct
+        import time
+        
+        # Generate 2FA code from shared_secret (same logic as in main.py)
+        secret_bytes = base64.b64decode(account.twofa_otp)
+        timestamp = int(time.time()) // 30
+        msg = struct.pack(">Q", timestamp)
+        hmac_hash = hmac.new(secret_bytes, msg, hashlib.sha1).digest()
+        offset = hmac_hash[-1] & 0x0F
+        code_int = int.from_bytes(hmac_hash[offset:offset + 4], "big") & 0x7FFFFFFF
+        alphabet = "23456789BCDFGHJKMNPQRTVWXY"
+        code = ""
+        for _ in range(5):
+            code += alphabet[code_int % len(alphabet)]
+            code_int //= len(alphabet)
+        
+        return {"status": "ok", "code": code}
+    except Exception as exc:
+        logging.exception("Failed to generate 2FA code for account %s", account_id)
+        raise HTTPException(status_code=500, detail=f"Failed to generate code: {str(exc)}")
+
+
 
 
 @app.get("/api/avatar")

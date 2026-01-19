@@ -657,7 +657,7 @@ export default function App() {
                                   <Button
                                     size="sm"
                                     onClick={() => loginAccount(acc.id)}
-                                    disabled={isLoggingIn}
+                                    disabled={isLoggingIn || isOnline}
                                     loading={isLoggingIn}
                                     style={{ flex: 1 }}
                                   >
@@ -667,31 +667,65 @@ export default function App() {
                                       ? 'Submit Code'
                                       : 'Login'}
                                   </Button>
-                                  {isOnline && (
-                                    <Button
-                                      size="sm"
-                                      variant="subtle"
-                                      color="red"
-                                      onClick={() => logoutAccount(acc.id)}
-                                    >
-                                      Logout
-                                    </Button>
-                                  )}
                                 </Group>
                               </Stack>
                             )}
                             
-                            {/* Logout button when online */}
+                            {/* Control Panel when online */}
                             {isOnline && (
-                              <Button
-                                size="sm"
-                                variant="light"
-                                color="red"
-                                onClick={() => logoutAccount(acc.id)}
-                                fullWidth
-                              >
-                                Logout
-                              </Button>
+                              <Stack gap="xs" mt="sm">
+                                <Divider label="Control Panel" labelPosition="center" />
+                                <Group gap="xs">
+                                  <Button
+                                    size="sm"
+                                    variant="light"
+                                    color="red"
+                                    onClick={() => logoutAccount(acc.id)}
+                                    style={{ flex: 1 }}
+                                  >
+                                    Logout
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="light"
+                                    color="orange"
+                                    onClick={async () => {
+                                      try {
+                                        await api(`/api/accounts/${acc.id}/deauthorize`, {
+                                          method: 'POST',
+                                        })
+                                        setError('')
+                                        await loadAccounts()
+                                      } catch (e) {
+                                        setError(e.message)
+                                      }
+                                    }}
+                                    style={{ flex: 1 }}
+                                  >
+                                    Log Off Everyone
+                                  </Button>
+                                </Group>
+                                {acc.has_twofa_otp && (
+                                  <Button
+                                    size="sm"
+                                    variant="light"
+                                    onClick={async () => {
+                                      try {
+                                        const data = await api(`/api/accounts/${acc.id}/code`)
+                                        if (data.code) {
+                                          setAccountGuards((prev) => ({ ...prev, [acc.id]: data.code }))
+                                          setError('')
+                                        }
+                                      } catch (e) {
+                                        setError(e.message)
+                                      }
+                                    }}
+                                    fullWidth
+                                  >
+                                    Get 2FA Code
+                                  </Button>
+                                )}
+                              </Stack>
                             )}
                           </Stack>
                         </Paper>
