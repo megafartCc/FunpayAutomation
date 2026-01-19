@@ -1362,6 +1362,8 @@ class SteamClient(BaseSteamClient):
     def __init__(self, *args, **kwargs):
         if not hasattr(self, "_listeners"):
             self._listeners = defaultdict(list)
+        if not hasattr(self, "_once"):
+            self._once = defaultdict(list)
         if not hasattr(self, "_wildcard_listeners"):
             self._wildcard_listeners = []
         super().__init__(*args, **kwargs)
