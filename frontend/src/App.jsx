@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
+  Alert,
   AppShell,
   Avatar,
   Badge,
@@ -250,6 +251,11 @@ export default function App() {
       }}
     >
       <AppShell.Main>
+        {error && (
+          <Alert color="red" mb="md" onClose={() => setError('')} withCloseButton>
+            {error}
+          </Alert>
+        )}
         <Box
           style={{
             height: '100%',
@@ -510,28 +516,51 @@ export default function App() {
                             <Text size="xs" c="dimmed" truncate>
                               {acc.steam_id || 'SteamID not set'}
                             </Text>
-                            <Group gap="xs" mt={6}>
+                            <Group gap="xs" mt={6} style={{ width: '100%' }}>
                               <TextInput
                                 size="xs"
                                 placeholder={
                                   acc.login_status === 'guard:email'
-                                    ? 'Email code'
+                                    ? 'Enter email code from Steam'
                                     : acc.login_status === 'guard:twofactor'
-                                    ? '2FA code'
+                                    ? 'Enter 2FA code'
                                     : 'Guard code (if needed)'
                                 }
                                 value={accountGuards[acc.id] || ''}
                                 onChange={(e) =>
                                   setAccountGuards((prev) => ({ ...prev, [acc.id]: e.target.value }))
                                 }
+                                style={{ flex: 1 }}
+                                disabled={acc.login_status === 'online'}
                               />
-                              <Button size="xs" onClick={() => loginAccount(acc.id)}>
-                                Login
+                              <Button 
+                                size="xs" 
+                                onClick={() => loginAccount(acc.id)}
+                                disabled={acc.login_status === 'online'}
+                              >
+                                {acc.login_status === 'guard:email' || acc.login_status === 'guard:twofactor'
+                                  ? 'Retry with Code'
+                                  : 'Login'}
                               </Button>
-                              <Button size="xs" variant="subtle" onClick={() => logoutAccount(acc.id)}>
+                              <Button 
+                                size="xs" 
+                                variant="subtle" 
+                                onClick={() => logoutAccount(acc.id)}
+                                disabled={acc.login_status !== 'online'}
+                              >
                                 Logout
                               </Button>
                             </Group>
+                            {acc.login_status === 'guard:email' && (
+                              <Text size="xs" c="yellow" mt={4}>
+                                ⚠️ Check your email for the Steam verification code
+                              </Text>
+                            )}
+                            {acc.login_status === 'guard:twofactor' && (
+                              <Text size="xs" c="yellow" mt={4}>
+                                ⚠️ Enter your Steam Guard mobile authenticator code
+                              </Text>
+                            )}
                           </Box>
                           <Badge
                             color={
