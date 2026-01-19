@@ -130,11 +130,11 @@ engine = create_engine(database_url, connect_args=connect_args)
 
 class Node(SQLModel, table=True):
     id: str = Field(primary_key=True)
-    last_id: Optional[int] = Field(default=None, sa_column=Column(BigInteger))
+    last_id: Optional[int] = Field(default=None, sa_column=Column(BigInteger, nullable=True))
 
 
 class Message(SQLModel, table=True):
-    id: int = Field(primary_key=True, sa_column=Column(BigInteger))
+    id: int = Field(sa_column=Column(BigInteger, primary_key=True))
     node_id: str = Field(primary_key=True)
     author: Optional[str] = None
     username: Optional[str] = None
