@@ -1600,8 +1600,10 @@ async def list_lots():
 
 @app.get("/api/accounts")
 def list_accounts(session: Session = Depends(get_session)):
-    rows = session.exec(select(Account).order_by(Account.id.desc())).all()
-    return [
+    """Get all accounts with improved error handling."""
+    try:
+        rows = session.exec(select(Account).order_by(Account.id.desc())).all()
+        return [
         {
             "id": row.id,
             "label": row.label,
