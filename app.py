@@ -24,6 +24,7 @@ from steam.client import SteamClient as BaseSteamClient
 from steam.enums import EResult
 from steam.webauth import WebAuth
 from eventemitter import EventEmitter
+from steamHandler import generate_2fa_code, change_steam_password, deauthorize_all_devices
 
 load_dotenv()
 logging.basicConfig(
@@ -2369,17 +2370,41 @@ def account_status(account_id: int, session: Session = Depends(get_session)):
 
 @app.post("/api/accounts/{account_id}/deauthorize")
 async def deauthorize_sessions(account_id: int, session: Session = Depends(get_session)):
-    """Deauthorize all Steam sessions (log off everyone, including active game sessions)."""
+    """Deauthorize all Steam sessions using Selenium - AUTO-STEAM-RENT style."""
     account = session.get(Account, account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found.")
     
-    steam_clients = getattr(app.state, "steam_clients", {})
-    client = steam_clients.get(account_id)
-    if not client:
-        raise HTTPException(status_code=400, detail="Account is not logged in.")
+    if not account.username or not account.password:
+        raise HTTPException(status_code=400, detail="Account missing username or password.")
     
     try:
+        # Get 2FA code if available
+        shared_secret = account.shared_secret or account.twofa_otp
+        two_factor_code = None
+        if shared_secret:
+            try:
+                two_factor_code = generate_2fa_code(shared_secret)
+            except:
+                pass
+        
+        # Use AUTO-STEAM-RENT style Selenium deauthorization
+        success = await asyncio.to_thread(
+            deauthorize_all_devices,
+            account.username,
+            account.password,
+            two_factor_code
+        )
+        
+        if success:
+            return {"status": "ok", "message": "All devices deauthorized successfully. Active game sessions should be terminated."}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to deauthorize devices. Please try again.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.exception("Failed to deauthorize sessions for account %s", account_id)
+        raise HTTPException(status_code=500, detail=f"Failed to deauthorize: {str(exc)}")
         # Check if client is logged on - MUST be logged on for web session
         logged_on = bool(
             getattr(client, "logged_on", False)
@@ -2577,43 +2602,28 @@ async def deauthorize_sessions(account_id: int, session: Session = Depends(get_s
 
 @app.get("/api/accounts/{account_id}/code")
 def get_2fa_code(account_id: int, session: Session = Depends(get_session)):
-    """Generate a 2FA code for the account using shared_secret."""
+    """Generate a 2FA code for the account using shared_secret - AUTO-STEAM-RENT style."""
     account = session.get(Account, account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found.")
     
-    if not account.twofa_otp:
+    # Try shared_secret first, then twofa_otp (for backwards compatibility)
+    shared_secret = account.shared_secret or account.twofa_otp
+    if not shared_secret:
         raise HTTPException(status_code=400, detail="Account does not have 2FA shared_secret configured.")
     
     try:
-        import base64
-        import hmac
-        import hashlib
-        import struct
-        import time
-        
-        # Generate 2FA code from shared_secret (same logic as in main.py)
-        secret_bytes = base64.b64decode(account.twofa_otp)
-        timestamp = int(time.time()) // 30
-        msg = struct.pack(">Q", timestamp)
-        hmac_hash = hmac.new(secret_bytes, msg, hashlib.sha1).digest()
-        offset = hmac_hash[-1] & 0x0F
-        code_int = int.from_bytes(hmac_hash[offset:offset + 4], "big") & 0x7FFFFFFF
-        alphabet = "23456789BCDFGHJKMNPQRTVWXY"
-        code = ""
-        for _ in range(5):
-            code += alphabet[code_int % len(alphabet)]
-            code_int //= len(alphabet)
-        
+        # Use AUTO-STEAM-RENT style 2FA generation
+        code = generate_2fa_code(shared_secret)
         return {"status": "ok", "code": code}
     except Exception as exc:
         logging.exception("Failed to generate 2FA code for account %s", account_id)
-        raise HTTPException(status_code=500, detail=f"Failed to generate code: {str(exc)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate 2FA code: {str(exc)}")
 
 
 @app.post("/api/accounts/{account_id}/change-password")
 async def change_steam_password_endpoint(account_id: int, payload: ChangePasswordRequest, session: Session = Depends(get_session)):
-    """Change the Steam account password."""
+    """Change the Steam account password using Selenium - AUTO-STEAM-RENT style."""
     account = session.get(Account, account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Account not found.")
@@ -2621,37 +2631,44 @@ async def change_steam_password_endpoint(account_id: int, payload: ChangePasswor
     if not account.username or not account.password:
         raise HTTPException(status_code=400, detail="Account missing username or password.")
     
-    steam_clients = getattr(app.state, "steam_clients", {})
-    client = steam_clients.get(account_id)
-    if not client:
-        raise HTTPException(status_code=400, detail="Account is not logged in. Please log in first.")
-    
     new_password = payload.new_password.strip()
     if len(new_password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters long.")
     
     try:
-        # Check if client is logged on - MUST be logged on for web session
-        logged_on = bool(
-            getattr(client, "logged_on", False)
-            or getattr(client, "is_logged_on", lambda: False)()
+        # Get 2FA code if available
+        shared_secret = account.shared_secret or account.twofa_otp
+        two_factor_code = None
+        if shared_secret:
+            try:
+                two_factor_code = generate_2fa_code(shared_secret)
+            except:
+                pass
+        
+        # Use AUTO-STEAM-RENT style Selenium password change
+        success = await asyncio.to_thread(
+            change_steam_password,
+            account.username,
+            account.password,
+            new_password,
+            two_factor_code
         )
         
-        if not logged_on:
-            raise HTTPException(
-                status_code=400,
-                detail="Account is not fully logged in. Please ensure login is complete before changing password."
-            )
-        
-        web_session = None
-        
-        # Debug: Log client state
-        logging.info("Password change - Client state for account %s: logged_on=%s, has_get_web_session=%s, has_web_session_attr=%s", 
-                    account_id, logged_on, hasattr(client, "get_web_session"), hasattr(client, "web_session"))
-        
-        # PRIMARY METHOD: Use get_web_session() - this is the official way per steam library docs
-        # https://steam.readthedocs.io/en/latest/api/steam.client.builtins.html
-        if hasattr(client, "get_web_session"):
+        if success:
+            # Update password in database
+            account.password = new_password
+            account.updated_at = time.time()
+            session.add(account)
+            session.commit()
+            logging.info("Password changed successfully for account %s", account_id)
+            return {"status": "ok", "message": "Password changed successfully."}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to change password. Please try again.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.exception("Failed to change password for account %s", account_id)
+        raise HTTPException(status_code=500, detail=f"Failed to change password: {str(exc)}")
             try:
                 def _get_web_session():
                     sess = client.get_web_session()
@@ -3080,12 +3097,6 @@ async def change_steam_password_endpoint(account_id: int, payload: ChangePasswor
             except Exception as e:
                 logging.warning("Error parsing password change response: %s", e)
             
-            logging.warning("Password change failed for account %s. Status: %s, Response: %s", account_id, response.status_code, response.text[:200])
-            raise HTTPException(status_code=400, detail=error_msg)
-            
-    except HTTPException:
-        raise
-    except Exception as exc:
         logging.exception("Failed to change password for account %s", account_id)
         raise HTTPException(status_code=500, detail=f"Failed to change password: {str(exc)}")
 
