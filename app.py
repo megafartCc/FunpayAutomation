@@ -1083,7 +1083,34 @@ def login_account(account_id: int, payload: AccountLogin, session: Session = Dep
         raise HTTPException(status_code=400, detail="Account missing username or password.")
 
     steam_clients = getattr(app.state, "steam_clients", {})
-    client = steam_clients.get(account_id) or SteamClient()
+    try:
+        client = steam_clients.get(account_id) or SteamClient()
+    except Exception as exc:
+        logging.exception("Steam client init failed for account %s", account_id)
+        account.login_status = "error:init"
+        account.updated_at = time.time()
+        session.add(account)
+        session.commit()
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    connected = getattr(client, "connected", None)
+    if connected is False or connected is None:
+        try:
+            connect_ok = client.connect()
+        except Exception as exc:
+            logging.exception("Steam connect failed for account %s", account_id)
+            account.login_status = "error:connect"
+            account.updated_at = time.time()
+            session.add(account)
+            session.commit()
+            raise HTTPException(status_code=500, detail=str(exc))
+        if connect_ok is False:
+            logging.warning("Steam connect returned false for account %s", account_id)
+            account.login_status = "error:connect"
+            account.updated_at = time.time()
+            session.add(account)
+            session.commit()
+            raise HTTPException(status_code=500, detail="Steam connect failed")
 
     guard_code = (payload.guard_code or account.twofa_otp or "").strip() or None
     email_code = (payload.email_code or "").strip() or None
@@ -1105,7 +1132,12 @@ def login_account(account_id: int, payload: AccountLogin, session: Session = Dep
     ok = result is True or result == EResult.OK
     if not ok:
         logging.warning("Steam login failed for account %s: %s", account_id, result)
-        account.login_status = f"error:{result}"
+        status_map = {
+            getattr(EResult, "AccountLogonDenied", None): "guard:email",
+            getattr(EResult, "AccountLogonDeniedNeedTwoFactor", None): "guard:twofactor",
+            getattr(EResult, "InvalidPassword", None): "error:invalid_password",
+        }
+        account.login_status = status_map.get(result, f"error:{result}")
         account.updated_at = time.time()
         session.add(account)
         session.commit()
