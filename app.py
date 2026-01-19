@@ -1291,6 +1291,208 @@ def logout_account(account_id: int, session: Session = Depends(get_session)):
     return {"status": "ok"}
 
 
+@app.post("/api/accounts/{account_id}/stop-rental")
+async def stop_rental(account_id: int, session: Session = Depends(get_session)):
+    """
+    Forcefully stop a rental and log off the renter.
+    This aggressively:
+    1. Changes the password (invalidates ALL sessions including active games)
+    2. Deauthorizes all devices
+    3. Logs out the SteamClient
+    4. Updates account status
+    
+    This is the proper way to end a rental and kick someone off.
+    """
+    import random
+    import string
+    
+    account = session.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found.")
+    
+    if not account.username or not account.password:
+        raise HTTPException(status_code=400, detail="Account missing username or password.")
+    
+    steam_clients = getattr(app.state, "steam_clients", {})
+    client = steam_clients.get(account_id)
+    
+    results = {
+        "password_changed": False,
+        "devices_deauthorized": False,
+        "client_logged_out": False,
+    }
+    
+    try:
+        # Step 1: Generate a new random password
+        new_password = ''.join(random.choice(string.ascii_letters + string.digits + '!@#$%^&*') for _ in range(16))
+        logging.info("Stopping rental for account %s - generating new password", account_id)
+        
+        # Step 2: If client is logged in, try to change password via web session
+        if client:
+            logged_on = bool(
+                getattr(client, "logged_on", False)
+                or getattr(client, "is_logged_on", lambda: False)()
+            )
+            
+            if logged_on:
+                # Try to get web session and change password
+                web_session = None
+                
+                # Try get_web_session()
+                if hasattr(client, "get_web_session"):
+                    try:
+                        def _get_web_session():
+                            sess = client.get_web_session()
+                            if sess is None and hasattr(client, "get_web_session_cookies"):
+                                cookies = client.get_web_session_cookies()
+                                if cookies:
+                                    import requests
+                                    sess = requests.Session()
+                                    for cookie in cookies:
+                                        sess.cookies.set(cookie['name'], cookie['value'], domain=cookie.get('domain', '.steamcommunity.com'))
+                            return sess
+                        web_session = await asyncio.to_thread(_get_web_session)
+                    except Exception as e:
+                        logging.warning("Failed to get web session for password change: %s", e)
+                
+                # Try web_session property
+                if not web_session and hasattr(client, "web_session") and client.web_session:
+                    web_session = client.web_session
+                
+                # Change password if we have web session
+                if web_session:
+                    try:
+                        # Get sessionid
+                        sessionid = None
+                        if hasattr(web_session, 'cookies'):
+                            for cookie in web_session.cookies:
+                                if cookie.name == 'sessionid':
+                                    sessionid = cookie.value
+                                    break
+                        
+                        if not sessionid:
+                            # Try to get from account page
+                            def _get_sessionid():
+                                resp = web_session.get('https://store.steampowered.com/account/')
+                                if resp.status_code == 200:
+                                    for cookie in web_session.cookies:
+                                        if cookie.name == 'sessionid':
+                                            return cookie.value
+                                    import re
+                                    match = re.search(r'g_sessionID = "([^"]+)"', resp.text)
+                                    if match:
+                                        return match.group(1)
+                                return None
+                            sessionid = await asyncio.to_thread(_get_sessionid)
+                        
+                        if sessionid:
+                            # Change password
+                            def _change_password():
+                                form_data = {
+                                    'sessionid': sessionid,
+                                    'password': account.password,
+                                    'newpassword': new_password,
+                                    'renewpassword': new_password
+                                }
+                                return web_session.post(
+                                    'https://store.steampowered.com/account/changepassword_finish',
+                                    data=form_data,
+                                    headers={'Referer': 'https://store.steampowered.com/account/changepassword'},
+                                    timeout=30
+                                )
+                            
+                            response = await asyncio.to_thread(_change_password)
+                            if response.status_code == 200 and ('successfully changed' in response.text.lower() or 'success' in response.text.lower()):
+                                account.password = new_password
+                                results["password_changed"] = True
+                                logging.info("Password changed successfully for account %s (stop rental)", account_id)
+                            
+                            # Deauthorize all devices
+                            try:
+                                def _revoke_devices():
+                                    revoke_data = {
+                                        'sessionid': sessionid,
+                                        'revokeall': '1'
+                                    }
+                                    endpoints = [
+                                        'https://store.steampowered.com/account/revokeauthorizeddevices',
+                                        'https://steamcommunity.com/devices/revoke',
+                                    ]
+                                    for endpoint in endpoints:
+                                        try:
+                                            resp = web_session.post(endpoint, data=revoke_data, timeout=30)
+                                            if resp.status_code == 200:
+                                                return True
+                                        except:
+                                            continue
+                                    return False
+                                
+                                if await asyncio.to_thread(_revoke_devices):
+                                    results["devices_deauthorized"] = True
+                                    logging.info("Devices deauthorized for account %s (stop rental)", account_id)
+                            except Exception as e:
+                                logging.warning("Failed to deauthorize devices: %s", e)
+                    except Exception as e:
+                        logging.warning("Failed to change password via web session: %s", e)
+        
+        # Step 3: Logout and disconnect the SteamClient
+        if client:
+            try:
+                if hasattr(client, "web_logoff"):
+                    client.web_logoff()
+                client.logout()
+                client.disconnect()
+                results["client_logged_out"] = True
+                logging.info("SteamClient logged out for account %s (stop rental)", account_id)
+            except Exception as e:
+                logging.warning("Failed to logout SteamClient: %s", e)
+            
+            # Remove from steam_clients
+            if account_id in steam_clients:
+                del steam_clients[account_id]
+                app.state.steam_clients = steam_clients
+        
+        # Step 4: Update account status
+        account.login_status = "offline"
+        account.updated_at = time.time()
+        
+        # If password was changed, update it in database
+        if results["password_changed"]:
+            session.add(account)
+            session.commit()
+        else:
+            # Even if password change failed, update status
+            session.add(account)
+            session.commit()
+        
+        # Return results
+        message_parts = []
+        if results["password_changed"]:
+            message_parts.append("Password changed")
+        if results["devices_deauthorized"]:
+            message_parts.append("All devices deauthorized")
+        if results["client_logged_out"]:
+            message_parts.append("Client logged out")
+        
+        if not any(results.values()):
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to stop rental. Could not change password or deauthorize devices. The renter may still be logged in."
+            )
+        
+        return {
+            "status": "ok",
+            "message": "Rental stopped. " + ", ".join(message_parts) + ".",
+            "results": results
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.exception("Failed to stop rental for account %s", account_id)
+        raise HTTPException(status_code=500, detail=f"Failed to stop rental: {str(exc)}")
+
+
 @app.get("/api/accounts/{account_id}/status")
 def account_status(account_id: int, session: Session = Depends(get_session)):
     account = session.get(Account, account_id)
