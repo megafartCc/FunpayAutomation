@@ -214,6 +214,9 @@ export default function App() {
                   const preview = d.preview || `#${d.node_id}`
                   const letter = name ? name.slice(0, 1).toUpperCase() : '?'
                   const isActive = activeChatNode === d.node_id
+                  const avatarSrc = d.avatar
+                    ? `/api/avatar?url=${encodeURIComponent(d.avatar)}`
+                    : null
                   return (
                     <Paper
                       key={d.node_id}
@@ -228,10 +231,10 @@ export default function App() {
                     >
                       <Group align="flex-start" gap="sm" wrap="nowrap">
                         <Avatar
-                          src={d.avatar}
+                          src={avatarSrc}
                           radius="xl"
                           color="gray"
-                          imageProps={{ referrerPolicy: 'no-referrer', loading: 'eager' }}
+                          imageProps={{ loading: 'eager' }}
                         >
                           {letter}
                         </Avatar>

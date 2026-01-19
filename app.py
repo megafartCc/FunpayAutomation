@@ -13,6 +13,7 @@ import httpx
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 
@@ -536,6 +537,13 @@ def extract_app_data(html: str) -> dict:
     return json.loads(raw)
 
 
+def is_allowed_avatar_host(host: Optional[str]) -> bool:
+    if not host:
+        return False
+    host = host.lower()
+    return host.endswith("funpay.com")
+
+
 # -------- FastAPI app --------
 app = FastAPI(title="Funpay Automation", version="0.2.0")
 
@@ -864,6 +872,30 @@ async def list_lots():
         raise HTTPException(status_code=400, detail="No active session. Set Golden Key first.")
     offers = await client.get_offers()
     return offers
+
+
+@app.get("/api/avatar")
+async def proxy_avatar(url: str = Query(..., description="Avatar URL to proxy")):
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not is_allowed_avatar_host(parsed.hostname):
+        raise HTTPException(status_code=400, detail="Invalid avatar URL.")
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/129.0.0.0 Safari/537.36",
+            },
+        )
+        if resp.status_code != 200:
+            raise HTTPException(status_code=resp.status_code, detail="Avatar fetch failed.")
+        content_type = resp.headers.get("content-type", "image/jpeg")
+        return Response(
+            content=resp.content,
+            media_type=content_type,
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
 
 
 @app.post("/api/lots/price")
