@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import time
+import re
 from dataclasses import dataclass
 from typing import Iterable, Optional
 from urllib.parse import urlparse
@@ -263,6 +264,32 @@ class FunpayClient:
         payload = await self.runner(objects, request=request)
         return payload
 
+    async def get_partner_info(self, other_user_id: str) -> dict:
+        await self.ensure_ready()
+        chat_node = get_users_node(self.user_id, other_user_id)
+        resp = await self.client.get(f"/chat/?node={chat_node}")
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        name_el = soup.select_one(".chat-header .media-user-name a") or soup.select_one(
+            ".chat-header .media-user-name"
+        )
+        name = name_el.get_text(strip=True) if name_el else None
+
+        avatar_url = None
+        img = soup.select_one(".chat-header img")
+        if img and img.get("src"):
+            avatar_url = img.get("src")
+        else:
+            avatar_el = soup.select_one(".chat-header .avatar-photo")
+            if avatar_el:
+                style = avatar_el.get("style", "")
+                match = re.search(r"url\\(([^)]+)\\)", style)
+                if match:
+                    avatar_url = match.group(1).strip("'\"")
+
+        return {"name": name, "avatar": avatar_url}
+
     async def get_offers(self) -> list[dict]:
         await self.ensure_ready()
         resp = await self.client.get(f"/users/{self.user_id}/")
@@ -360,6 +387,8 @@ async def on_startup():
     app.state.stop_event = asyncio.Event()
     app.state.fp_client: Optional[FunpayClient] = None
     app.state.poller_task = None
+    app.state.partner_cache = {}
+    app.state.partner_cache_ttl = 600
     if settings.initial_key:
         await start_session(settings.initial_key, settings.base_url)
     else:
@@ -407,15 +436,38 @@ async def session_status():
 
 
 @app.get("/api/nodes")
-def list_nodes(session: Session = Depends(get_session)):
+async def list_nodes(session: Session = Depends(get_session)):
     nodes = session.exec(select(Node)).all()
     result = []
+    client: Optional[FunpayClient] = getattr(app.state, "fp_client", None)
+    cache: dict = getattr(app.state, "partner_cache", {})
+    ttl = getattr(app.state, "partner_cache_ttl", 600)
+    now = time.time()
+
     for n in nodes:
         last_msg = (
             session.exec(
                 select(Message).where(Message.node_id == n.id).order_by(Message.id.desc()).limit(1)
             ).first()
         )
+
+        partner_name = None
+        partner_avatar = None
+        cached = cache.get(n.id)
+        if cached and now - cached.get("ts", 0) < ttl:
+            partner_name = cached.get("name")
+            partner_avatar = cached.get("avatar")
+        elif client:
+            try:
+                info = await client.get_partner_info(n.id)
+                partner_name = info.get("name")
+                partner_avatar = info.get("avatar")
+                cache[n.id] = {"name": partner_name, "avatar": partner_avatar, "ts": now}
+            except Exception:
+                if cached:
+                    partner_name = cached.get("name")
+                    partner_avatar = cached.get("avatar")
+
         result.append(
             {
                 "id": n.id,
@@ -423,8 +475,12 @@ def list_nodes(session: Session = Depends(get_session)):
                 "last_username": getattr(last_msg, "username", None),
                 "last_body": getattr(last_msg, "body", None),
                 "last_created_at": getattr(last_msg, "created_at", None),
+                "partner_name": partner_name,
+                "partner_avatar": partner_avatar,
             }
         )
+
+    app.state.partner_cache = cache
     return result
 
 
