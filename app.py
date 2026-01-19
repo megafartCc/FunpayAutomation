@@ -16,6 +16,8 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from sqlmodel import Field, Session, SQLModel, create_engine, select
+from steam.client import SteamClient
+from steam.enums import EResult
 
 load_dotenv()
 logging.basicConfig(
@@ -584,6 +586,7 @@ async def on_startup():
     app.state.stop_event = asyncio.Event()
     app.state.fp_client: Optional[FunpayClient] = None
     app.state.poller_task = None
+    app.state.steam_clients = {}
     app.state.partner_cache = {}
     app.state.partner_cache_ttl = 600
     app.state.dialog_cache = {}
@@ -606,6 +609,11 @@ async def on_shutdown():
     client: FunpayClient = app.state.fp_client
     if client:
         await client.close()
+    steam_clients = getattr(app.state, "steam_clients", {})
+    for steam_client in steam_clients.values():
+        with contextlib.suppress(Exception):
+            steam_client.logout()
+            steam_client.disconnect()
 
 
 # -------- API routes --------
@@ -818,6 +826,10 @@ class AccountUpdate(SQLModel):
     twofa_otp: Optional[str] = None
 
 
+class AccountLogin(SQLModel):
+    guard_code: Optional[str] = None
+
+
 @app.post("/api/messages/send")
 async def send_message(payload: SendMessage, session: Session = Depends(get_session)):
     node_id = str(payload.node)
@@ -1016,6 +1028,82 @@ def update_account(account_id: int, payload: AccountUpdate, session: Session = D
     session.add(account)
     session.commit()
     return {"status": "ok"}
+
+
+@app.post("/api/accounts/{account_id}/login")
+def login_account(account_id: int, payload: AccountLogin, session: Session = Depends(get_session)):
+    account = session.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found.")
+    if not account.username or not account.password:
+        raise HTTPException(status_code=400, detail="Account missing username or password.")
+
+    steam_clients = getattr(app.state, "steam_clients", {})
+    client = steam_clients.get(account_id) or SteamClient()
+
+    guard_code = (payload.guard_code or account.twofa_otp or "").strip() or None
+    result = client.login(account.username, account.password, two_factor_code=guard_code)
+
+    ok = result is True or result == EResult.OK
+    if not ok:
+        account.login_status = f"error:{result}"
+        account.updated_at = time.time()
+        session.add(account)
+        session.commit()
+        raise HTTPException(status_code=401, detail=f"Login failed: {result}")
+
+    steam_clients[account_id] = client
+    app.state.steam_clients = steam_clients
+    account.login_status = "online"
+    account.steam_id = str(getattr(client, "steam_id", "") or account.steam_id or "")
+    account.updated_at = time.time()
+    session.add(account)
+    session.commit()
+    return {
+        "status": "ok",
+        "steam_id": account.steam_id,
+        "login_status": account.login_status,
+    }
+
+
+@app.post("/api/accounts/{account_id}/logout")
+def logout_account(account_id: int, session: Session = Depends(get_session)):
+    account = session.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found.")
+    steam_clients = getattr(app.state, "steam_clients", {})
+    client = steam_clients.pop(account_id, None)
+    if client:
+        with contextlib.suppress(Exception):
+            client.logout()
+            client.disconnect()
+    app.state.steam_clients = steam_clients
+    account.login_status = "offline"
+    account.updated_at = time.time()
+    session.add(account)
+    session.commit()
+    return {"status": "ok"}
+
+
+@app.get("/api/accounts/{account_id}/status")
+def account_status(account_id: int, session: Session = Depends(get_session)):
+    account = session.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found.")
+    steam_clients = getattr(app.state, "steam_clients", {})
+    client = steam_clients.get(account_id)
+    logged_on = False
+    if client:
+        logged_on = bool(
+            getattr(client, "logged_on", False)
+            or getattr(client, "is_logged_on", lambda: False)()
+        )
+    return {
+        "status": "ok",
+        "login_status": account.login_status,
+        "logged_on": logged_on,
+        "steam_id": account.steam_id,
+    }
 
 
 

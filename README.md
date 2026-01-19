@@ -12,6 +12,10 @@ FastAPI backend plus a React single-page UI. It mirrors the `funpayapi` flow (ht
   - `GET /api/nodes`, `POST /api/nodes` `{ node }`
   - `GET /api/messages?node=...&limit=...`, `POST /api/messages/send` `{ node, message }`
   - `GET /api/lots`, `POST /api/lots/price` `{ node, offer, price }`
+  - `GET /api/accounts`, `POST /api/accounts` `{ label?, username, password, steam_id?, login_status?, twofa_otp? }`
+  - `PUT /api/accounts/{id}` `{ label?, username?, password?, steam_id?, login_status?, twofa_otp? }`
+  - `POST /api/accounts/{id}/login` `{ guard_code? }`, `POST /api/accounts/{id}/logout`
+  - `GET /api/accounts/{id}/status`
 
 ## Quick start (backend)
 ```bash
