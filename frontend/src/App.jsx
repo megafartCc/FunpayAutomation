@@ -62,6 +62,7 @@ export default function App() {
   })
 
   const isNarrow = useMediaQuery('(max-width: 900px)')
+  const isWide = useMediaQuery('(min-width: 1400px)')
   const statusLabel = useMemo(() => {
     if (error) return { text: 'Error', tone: 'danger' }
     if (session.polling) {
@@ -229,10 +230,12 @@ export default function App() {
             display: 'grid',
             gridTemplateColumns: isNarrow
               ? '1fr'
-              : '280px minmax(700px, 1fr) minmax(240px, 280px)',
+              : isWide
+                ? '280px minmax(700px, 1fr) minmax(520px, 640px)'
+                : '280px minmax(700px, 1fr) minmax(240px, 320px)',
             gridTemplateRows: isNarrow ? 'minmax(0, 1fr) minmax(0, 1fr)' : '1fr',
             gap: 16,
-            maxWidth: 1400,
+            maxWidth: isWide ? 1800 : 1400,
             margin: '0 auto',
           }}
         >
@@ -366,7 +369,100 @@ export default function App() {
           </Paper>
 
           {!isNarrow && (
-            <Stack style={{ minHeight: 0 }}>
+            <Box
+              style={{
+                display: 'grid',
+                gridTemplateColumns: isWide ? 'minmax(260px, 1fr) minmax(240px, 1fr)' : '1fr',
+                gap: 16,
+                minHeight: 0,
+              }}
+            >
+              <Stack style={{ minHeight: 0 }}>
+                <Paper withBorder radius="md" p="md" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                  <Group justify="space-between" mb="xs">
+                    <Text fw={700}>Active orders</Text>
+                    <Button variant="subtle" size="xs" onClick={loadOrders} loading={loadingOrders}>
+                      Refresh
+                    </Button>
+                  </Group>
+                  <ScrollArea style={{ flex: 1, minHeight: 0 }} offsetScrollbars scrollbarSize={8}>
+                    <Stack gap="sm">
+                      {orders.length === 0 && (
+                        <Text size="sm" c="dimmed">
+                          {loadingOrders ? 'Loading orders...' : 'No active orders.'}
+                        </Text>
+                      )}
+                      {orders.map((order) => (
+                        <Paper key={order.order_id} withBorder radius="md" p="sm">
+                          <Group justify="space-between" gap="xs" wrap="nowrap">
+                            <Text size="sm" fw={600} truncate>
+                              #{order.order_id}
+                            </Text>
+                            <Group gap="xs" wrap="nowrap">
+                              {order.is_new && (
+                                <Badge color="green" variant="light">
+                                  New
+                                </Badge>
+                              )}
+                              <Badge color="gray" variant="light">
+                                {order.status || 'Unknown'}
+                              </Badge>
+                            </Group>
+                          </Group>
+                          <Text size="xs" c="dimmed" truncate>
+                            {order.product || 'Order'}{order.amount ? ` x${order.amount}` : ''}
+                          </Text>
+                          <Text size="xs" c="dimmed" truncate>
+                            {order.date || ''}{order.user_id ? ` • User ${order.user_id}` : ''}
+                          </Text>
+                        </Paper>
+                      ))}
+                    </Stack>
+                  </ScrollArea>
+                </Paper>
+
+                <Paper withBorder radius="md" p="md" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                  <Group justify="space-between" mb="xs">
+                    <Text fw={700}>Active lots</Text>
+                    <Button variant="subtle" size="xs" onClick={loadLots} loading={loadingLots}>
+                      Refresh
+                    </Button>
+                  </Group>
+                  <ScrollArea style={{ flex: 1, minHeight: 0 }} offsetScrollbars scrollbarSize={8}>
+                    <Stack gap="sm">
+                      {lots.length === 0 && (
+                        <Text size="sm" c="dimmed">
+                          {loadingLots ? 'Loading lots...' : 'No lots available.'}
+                        </Text>
+                      )}
+                      {lots.map((group) => (
+                        <Paper key={group.node || group.group_name} withBorder radius="md" p="sm">
+                          <Text fw={600} size="sm" mb={4}>
+                            {group.group_name || 'Group'}
+                          </Text>
+                          <Stack gap={6}>
+                            {(group.offers || []).map((offer) => (
+                              <Group
+                                key={`${group.node || group.group_name}-${offer.id || offer.name}`}
+                                justify="space-between"
+                                wrap="nowrap"
+                              >
+                                <Text size="xs" truncate>
+                                  {offer.name || 'Offer'}
+                                </Text>
+                                <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
+                                  {offer.price || ''}
+                                </Text>
+                              </Group>
+                            ))}
+                          </Stack>
+                        </Paper>
+                      ))}
+                    </Stack>
+                  </ScrollArea>
+                </Paper>
+              </Stack>
+
               <Paper withBorder radius="md" p="md" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
                 <Group justify="space-between" mb="xs">
                   <Text fw={700}>Accounts</Text>
@@ -434,91 +530,7 @@ export default function App() {
                   </Stack>
                 </ScrollArea>
               </Paper>
-
-              <Paper withBorder radius="md" p="md" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-                <Group justify="space-between" mb="xs">
-                  <Text fw={700}>Active orders</Text>
-                  <Button variant="subtle" size="xs" onClick={loadOrders} loading={loadingOrders}>
-                    Refresh
-                  </Button>
-                </Group>
-                <ScrollArea style={{ flex: 1, minHeight: 0 }} offsetScrollbars scrollbarSize={8}>
-                  <Stack gap="sm">
-                    {orders.length === 0 && (
-                      <Text size="sm" c="dimmed">
-                        {loadingOrders ? 'Loading orders...' : 'No active orders.'}
-                      </Text>
-                    )}
-                    {orders.map((order) => (
-                      <Paper key={order.order_id} withBorder radius="md" p="sm">
-                        <Group justify="space-between" gap="xs" wrap="nowrap">
-                          <Text size="sm" fw={600} truncate>
-                            #{order.order_id}
-                          </Text>
-                          <Group gap="xs" wrap="nowrap">
-                            {order.is_new && (
-                              <Badge color="green" variant="light">
-                                New
-                              </Badge>
-                            )}
-                            <Badge color="gray" variant="light">
-                              {order.status || 'Unknown'}
-                            </Badge>
-                          </Group>
-                        </Group>
-                        <Text size="xs" c="dimmed" truncate>
-                          {order.product || 'Order'}{order.amount ? ` x${order.amount}` : ''}
-                        </Text>
-                        <Text size="xs" c="dimmed" truncate>
-                          {order.date || ''}{order.user_id ? ` • User ${order.user_id}` : ''}
-                        </Text>
-                      </Paper>
-                    ))}
-                  </Stack>
-                </ScrollArea>
-              </Paper>
-
-              <Paper withBorder radius="md" p="md" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-                <Group justify="space-between" mb="xs">
-                  <Text fw={700}>Active lots</Text>
-                  <Button variant="subtle" size="xs" onClick={loadLots} loading={loadingLots}>
-                    Refresh
-                  </Button>
-                </Group>
-                <ScrollArea style={{ flex: 1, minHeight: 0 }} offsetScrollbars scrollbarSize={8}>
-                  <Stack gap="sm">
-                    {lots.length === 0 && (
-                      <Text size="sm" c="dimmed">
-                        {loadingLots ? 'Loading lots...' : 'No lots available.'}
-                      </Text>
-                    )}
-                    {lots.map((group) => (
-                      <Paper key={group.node || group.group_name} withBorder radius="md" p="sm">
-                        <Text fw={600} size="sm" mb={4}>
-                          {group.group_name || 'Group'}
-                        </Text>
-                        <Stack gap={6}>
-                          {(group.offers || []).map((offer) => (
-                            <Group
-                              key={`${group.node || group.group_name}-${offer.id || offer.name}`}
-                              justify="space-between"
-                              wrap="nowrap"
-                            >
-                              <Text size="xs" truncate>
-                                {offer.name || 'Offer'}
-                              </Text>
-                              <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>
-                                {offer.price || ''}
-                              </Text>
-                            </Group>
-                          ))}
-                        </Stack>
-                      </Paper>
-                    ))}
-                  </Stack>
-                </ScrollArea>
-              </Paper>
-            </Stack>
+            </Box>
           )}
         </Box>
       </AppShell.Main>
