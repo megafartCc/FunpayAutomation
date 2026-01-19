@@ -184,6 +184,14 @@ class Node(SQLModel, table=True):
     last_id: Optional[int] = Field(default=None, sa_column=Column(BigInteger, nullable=True))
 
 
+class ProcessedOrder(SQLModel, table=True):
+    """Track processed orders to avoid duplicates (AUTO-STEAM-RENT style)."""
+    order_id: str = Field(primary_key=True)
+    processed_at: float = Field(default_factory=time.time)
+    account_id: Optional[int] = None  # Which account was issued
+    user_id: Optional[str] = None  # FunPay user who ordered
+
+
 class Message(SQLModel, table=True):
     id: int = Field(sa_column=Column(BigInteger, primary_key=True))
     node_id: str = Field(primary_key=True)
@@ -716,6 +724,99 @@ class FunpayClient:
     async def get_partner_info(self, other_user_id: str) -> dict:
         chat_node = get_users_node(self.user_id, other_user_id)
         return await self.get_partner_from_node(chat_node)
+
+    async def get_orders(self) -> list[dict]:
+        """
+        Get active orders from FunPay (AUTO-STEAM-RENT style).
+        """
+        await self.ensure_ready()
+        
+        # Try multiple endpoints for orders
+        endpoints = [
+            "/orders/",
+            "/orders?type=purchases",  # Purchases (we're the seller)
+            "/orders?type=sales",  # Sales
+        ]
+        
+        for endpoint in endpoints:
+            try:
+                resp = await self.client.get(endpoint)
+                resp.raise_for_status()
+                soup = BeautifulSoup(resp.text, "html.parser")
+                
+                orders = []
+                
+                # Try multiple selectors for order items
+                order_selectors = [
+                    ".order-item",
+                    ".order",
+                    "[data-order-id]",
+                    ".tc-item.order",
+                ]
+                
+                for selector in order_selectors:
+                    order_items = soup.select(selector)
+                    if order_items:
+                        for item in order_items:
+                            order_id = (item.get("data-order-id") or
+                                       item.get("data-id") or
+                                       item.get("id", "").replace("order-", ""))
+                            
+                            if not order_id:
+                                continue
+                            
+                            # Extract buyer info
+                            buyer_link = item.select_one("a[href*='/users/']")
+                            buyer_id = None
+                            if buyer_link:
+                                href = buyer_link.get("href", "")
+                                match = re.search(r"/users/(\d+)/", href)
+                                if match:
+                                    buyer_id = match.group(1)
+                            
+                            # Extract lot name
+                            lot_name_el = (item.select_one(".order-lot-name") or
+                                         item.select_one(".lot-name") or
+                                         item.select_one(".order-title") or
+                                         item.select_one("h3") or
+                                         item.select_one("h4"))
+                            lot_name = lot_name_el.get_text(strip=True) if lot_name_el else ""
+                            
+                            # Extract amount
+                            amount_el = (item.select_one(".order-amount") or
+                                       item.select_one(".amount") or
+                                       item.select_one(".price") or
+                                       item.select_one("[class*='amount']"))
+                            amount_text = amount_el.get_text(strip=True) if amount_el else "0"
+                            # Extract number from amount text
+                            amount_match = re.search(r"(\d+(?:[.,]\d+)?)", amount_text.replace(",", "."))
+                            amount = float(amount_match.group(1)) if amount_match else 0.0
+                            
+                            # Extract status
+                            status_el = (item.select_one(".order-status") or
+                                       item.select_one(".status") or
+                                       item.select_one("[class*='status']"))
+                            status = status_el.get_text(strip=True) if status_el else ""
+                            
+                            orders.append({
+                                "order_id": order_id,
+                                "buyer_id": buyer_id,
+                                "lot_name": lot_name,
+                                "amount": amount,
+                                "status": status,
+                            })
+                        
+                        if orders:
+                            logging.info("Found %d orders from endpoint: %s", len(orders), endpoint)
+                            return orders
+                
+            except Exception as e:
+                logging.warning("Failed to fetch orders from %s: %s", endpoint, e)
+                continue
+        
+        logging.warning("Failed to fetch orders from any known endpoint")
+        return []
+
 
     async def get_offers(self) -> list[dict]:
         """
@@ -2924,6 +3025,7 @@ async def poller():
 
     stop_event: asyncio.Event = app.state.stop_event
     log = logging.getLogger("poller")
+    last_order_check = 0.0
 
     while not stop_event.is_set():
         start = time.time()
@@ -2932,6 +3034,13 @@ async def poller():
                 current_client: Optional[FunpayClient] = getattr(app.state, "fp_client", None)
                 if not current_client:
                     break
+                
+                # Check for new orders every 5 seconds (AUTO-STEAM-RENT style)
+                current_time = time.time()
+                if current_time - last_order_check >= 5.0:
+                    await check_new_orders(session, current_client, log)
+                    last_order_check = current_time
+                
                 nodes = session.exec(select(Node)).all()
                 for node in nodes:
                     await poll_node(session, current_client, log, node)
@@ -2940,6 +3049,168 @@ async def poller():
         elapsed = time.time() - start
         delay = max(settings.poll_seconds - elapsed, 0.5)
         await asyncio.sleep(delay)
+
+
+async def check_new_orders(
+    session: Session,
+    client: FunpayClient,
+    log: logging.Logger,
+):
+    """
+    Check for new orders using multiple methods (AUTO-STEAM-RENT style):
+    1. FunPay's orders_counters via runner API
+    2. Direct orders page scraping
+    """
+    try:
+        await client.ensure_ready()
+        
+        # Method 1: Check orders_counters via runner API
+        try:
+            objects = [
+                {"type": "orders_counters", "id": client.user_id, "tag": "py", "data": True},
+            ]
+            
+            payload = await client.runner(objects)
+            objects_resp = payload.get("objects", [])
+            
+            for obj in objects_resp:
+                if obj.get("type") != "orders_counters":
+                    continue
+                
+                data = obj.get("data", {})
+                # FunPay returns order information here
+                # Check for new orders
+                new_orders = data.get("new", []) or data.get("orders", []) or data.get("active", []) or []
+                
+                for order_data in new_orders:
+                    order_id = str(order_data.get("id") or order_data.get("order_id") or order_data.get("orderId", ""))
+                    if not order_id:
+                        continue
+                    
+                    # Check if we already processed this order
+                    existing = session.get(ProcessedOrder, order_id)
+                    if existing:
+                        continue
+                    
+                    # Get order details
+                    buyer_id = str(order_data.get("buyer_id") or order_data.get("buyer") or order_data.get("buyerId", ""))
+                    lot_name = order_data.get("lot_name") or order_data.get("name") or order_data.get("lotName", "")
+                    amount = order_data.get("amount") or order_data.get("sum") or order_data.get("price", 0)
+                    
+                    log.info("New order detected (runner): ID=%s, Buyer=%s, Lot=%s", order_id, buyer_id, lot_name)
+                    
+                    # Process the order
+                    await process_order(session, client, log, order_id, buyer_id, lot_name, amount)
+                    
+                    # Mark as processed
+                    processed = ProcessedOrder(
+                        order_id=order_id,
+                        user_id=buyer_id,
+                    )
+                    session.add(processed)
+                    session.commit()
+        except Exception as exc:
+            log.warning("Error checking orders via runner API: %s", exc)
+        
+        # Method 2: Check orders page directly (fallback)
+        try:
+            orders = await client.get_orders()
+            for order in orders:
+                order_id = str(order.get("order_id", ""))
+                if not order_id:
+                    continue
+                
+                # Check if we already processed this order
+                existing = session.get(ProcessedOrder, order_id)
+                if existing:
+                    continue
+                
+                buyer_id = str(order.get("buyer_id", ""))
+                lot_name = order.get("lot_name", "")
+                amount = order.get("amount", 0)
+                status = order.get("status", "")
+                
+                # Only process active/new orders
+                if "новый" in status.lower() or "new" in status.lower() or "актив" in status.lower() or not status:
+                    log.info("New order detected (page): ID=%s, Buyer=%s, Lot=%s", order_id, buyer_id, lot_name)
+                    
+                    # Process the order
+                    await process_order(session, client, log, order_id, buyer_id, lot_name, amount)
+                    
+                    # Mark as processed
+                    processed = ProcessedOrder(
+                        order_id=order_id,
+                        user_id=buyer_id,
+                    )
+                    session.add(processed)
+                    session.commit()
+        except Exception as exc:
+            log.warning("Error checking orders via page: %s", exc)
+    
+    except Exception as exc:
+        log.exception("Error checking new orders: %s", exc)
+
+
+async def process_order(
+    session: Session,
+    client: FunpayClient,
+    log: logging.Logger,
+    order_id: str,
+    buyer_id: str,
+    lot_name: str,
+    amount: float,
+):
+    """
+    Process a new order - automatically issue account (AUTO-STEAM-RENT style).
+    """
+    from sqlmodel import select
+    
+    # Find available account
+    account = session.exec(
+        select(Account).where(Account.is_rented == False).limit(1)
+    ).first()
+    
+    if not account:
+        # No accounts available - notify buyer
+        try:
+            await client.send_chat_message(
+                buyer_id,
+                "❌ К сожалению, сейчас все аккаунты заняты. Попробуйте позже или обратитесь в поддержку.",
+            )
+            log.warning("Order %s: No available accounts", order_id)
+        except:
+            pass
+        return
+    
+    # Rent the account
+    import uuid
+    session_id = str(uuid.uuid4())
+    expires_at = int(time.time() + 7200)  # 2 hours
+    
+    account.is_rented = True
+    account.rented_to_user_id = buyer_id
+    account.session_id = session_id
+    account.expires_at = expires_at
+    session.add(account)
+    session.commit()
+    
+    # Send account details to buyer
+    message = f"""✅ Ваш аккаунт готов!
+
+👤 Логин: `{account.username}`
+🔑 Пароль: `{account.password}`
+
+🔐 Для получения кода Steam Guard используйте команду `/code`
+
+⏰ Аренда действительна 2 часа.
+
+⚠️ Не передавайте данные аккаунта третьим лицам!"""
+    
+    try:
+        await client.send_chat_message(buyer_id, message)
+        log.info("Order %s: Issued account %s to user %s", order_id, account.id, buyer_id)
+    except Exception as exc:
+        log.exception("Order %s: Failed to send message to user %s: %s", order_id, buyer_id, exc)
 
 
 async def process_new_messages(
@@ -2953,11 +3224,12 @@ async def process_new_messages(
     Process new messages automatically (AUTO-STEAM-RENT style):
     - Handle /code commands (send 2FA code)
     - Handle /stock commands (check available accounts)
-    - Process new orders (automatically issue accounts)
     - Handle reviews (extend rental time)
+    - Handle other commands
     """
     for msg in new_messages:
-        body = (msg.get("body") or "").strip().lower()
+        body = (msg.get("body") or "").strip()
+        body_lower = body.lower()
         author = msg.get("author")
         username = msg.get("username")
         
@@ -2966,25 +3238,21 @@ async def process_new_messages(
             continue
         
         try:
-            # Handle /code command - send 2FA code
-            if body == "/code" or body.startswith("/code "):
+            # Handle /code command - send 2FA code (AUTO-STEAM-RENT style)
+            if body_lower == "/code" or body_lower.startswith("/code "):
                 await handle_code_command(session, client, log, node, msg)
             
             # Handle /stock command - check available accounts
-            elif body == "/stock" or body.startswith("/stock "):
+            elif body_lower == "/stock" or body_lower.startswith("/stock "):
                 await handle_stock_command(session, client, log, node, msg)
             
-            # Handle new order - automatically issue account (AUTO-STEAM-RENT style)
-            # Detect orders by various patterns
-            order_keywords = [
-                "заказ", "order", "куп", "покуп", "новый заказ",
-                "новый ордер", "оформил", "приобрел", "buy", "purchase"
+            # Handle review - extend rental (AUTO-STEAM-RENT style)
+            # Detect reviews by stars, review keywords, or FunPay review patterns
+            review_patterns = [
+                "⭐", "★", "отзыв", "review", "оценка", "rating",
+                "спасибо", "thanks", "благодар", "отличн"
             ]
-            if any(keyword in body for keyword in order_keywords):
-                await handle_new_order(session, client, log, node, msg)
-            
-            # Handle review - extend rental
-            elif "отзыв" in body or "review" in body or "⭐" in body or "★" in body:
+            if any(pattern in body_lower for pattern in review_patterns):
                 await handle_review(session, client, log, node, msg)
         
         except Exception as exc:
@@ -3070,53 +3338,6 @@ async def handle_stock_command(
     log.info("Stock check for user %s: %d available", node.id, count)
 
 
-async def handle_new_order(
-    session: Session,
-    client: FunpayClient,
-    log: logging.Logger,
-    node: Node,
-    msg: dict,
-):
-    """Handle new order - automatically issue account to user."""
-    from sqlmodel import select
-    import uuid
-    
-    # Find available account
-    account = session.exec(
-        select(Account).where(Account.is_rented == False).limit(1)
-    ).first()
-    
-    if not account:
-        await client.send_chat_message(
-            node.id,
-            "❌ К сожалению, сейчас все аккаунты заняты. Попробуйте позже.",
-        )
-        return
-    
-    # Rent the account
-    session_id = str(uuid.uuid4())
-    expires_at = int(time.time() + 7200)  # 2 hours
-    
-    account.is_rented = True
-    account.rented_to_user_id = str(node.id)
-    account.session_id = session_id
-    account.expires_at = expires_at
-    session.add(account)
-    session.commit()
-    
-    # Send account details
-    message = f"""✅ Ваш аккаунт готов!
-
-👤 Логин: `{account.username}`
-🔑 Пароль: `{account.password}`
-🔐 Steam Guard код: `/code`
-
-⏰ Аренда действительна 2 часа.
-
-Для получения кода Steam Guard используйте команду `/code`"""
-    
-    await client.send_chat_message(node.id, message)
-    log.info("Issued account %s to user %s", account.id, node.id)
 
 
 async def handle_review(
