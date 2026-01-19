@@ -682,6 +682,29 @@ export default function App() {
                             {isOnline && (
                               <Stack gap="xs" mt="sm">
                                 <Divider label="Control Panel" labelPosition="center" />
+                                <Button
+                                  size="md"
+                                  variant="filled"
+                                  color="red"
+                                  onClick={async () => {
+                                    if (!confirm('Are you sure you want to stop the rental? This will change the password and log off the renter.')) {
+                                      return
+                                    }
+                                    try {
+                                      const result = await api(`/api/accounts/${acc.id}/stop-rental`, {
+                                        method: 'POST',
+                                      })
+                                      setError('')
+                                      alert(result.message || 'Rental stopped successfully')
+                                      await loadAccounts()
+                                    } catch (e) {
+                                      setError(e.message)
+                                    }
+                                  }}
+                                  fullWidth
+                                >
+                                  🛑 Stop Rental (Force Logout)
+                                </Button>
                                 <Group gap="xs">
                                   <Button
                                     size="sm"
