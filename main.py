@@ -7,11 +7,13 @@ import base64
 import hmac
 import hashlib
 import struct
+import asyncio
 import mysql.connector
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from steam.client import SteamClient
+from steam.client import SteamClient as BaseSteamClient
 from steam.enums import EResult
+from eventemitter import EventEmitter
 from apscheduler.schedulers.background import BackgroundScheduler
 
 # --- 1. SETUP & CONFIGURATION ---
@@ -52,6 +54,33 @@ def init_steam_db():
         print(f"❌ DATABASE INIT FAILED: {e}")
 
 # --- 2. CORE STEAM HELPER FUNCTIONS ---
+
+# Custom SteamClient with proper EventEmitter initialization
+class SteamClient(BaseSteamClient):
+    """Custom SteamClient that properly initializes the event loop and EventEmitter."""
+    def __init__(self, *args, **kwargs):
+        # Properly initialize EventEmitter before BaseSteamClient
+        try:
+            # Try to get the running event loop first (for async contexts)
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # If no running loop, try to get the current event loop
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    # If no event loop exists, create a new one
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+        except Exception:
+            # Fallback: create a new event loop
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        # Initialize EventEmitter first
+        EventEmitter.__init__(self, loop=loop)
+        # Then call the parent class
+        super().__init__(*args, **kwargs)
 
 def perform_steam_login(username, password, shared_secret):
     """Logs into Steam and returns an authenticated client object."""

@@ -1360,10 +1360,25 @@ if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
 class SteamClient(BaseSteamClient):
     def __init__(self, *args, **kwargs):
+        # Properly initialize EventEmitter before BaseSteamClient
         try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
+            # Try to get the running event loop first (for async contexts)
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # If no running loop, try to get the current event loop
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    # If no event loop exists, create a new one
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+        except Exception:
+            # Fallback: create a new event loop
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
+        
+        # Initialize EventEmitter first
         EventEmitter.__init__(self, loop=loop)
+        # Then call the parent class
         super().__init__(*args, **kwargs)
