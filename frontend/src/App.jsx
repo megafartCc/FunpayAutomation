@@ -112,33 +112,58 @@ export default function App() {
     }
   }
 
-  const loadDialogs = async () => {
-    try {
-      const data = await api('/api/dialogs?resolve=1&resolve_limit=200')
-      setDialogs(data)
-    } catch (e) {
-      setError(e.message)
+  const loadDialogs = async (retries = 3) => {
+    for (let i = 0; i < retries; i++) {
+      try {
+        const data = await api('/api/dialogs?resolve=1&resolve_limit=200')
+        setDialogs(Array.isArray(data) ? data : [])
+        return // Success
+      } catch (e) {
+        console.error(`Failed to load dialogs (attempt ${i + 1}/${retries}):`, e)
+        if (i === retries - 1) {
+          // Last attempt failed - don't block, just log
+          console.warn('Dialogs failed to load after retries')
+        } else {
+          await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)))
+        }
+      }
     }
   }
 
-  const loadLots = async () => {
+  const loadLots = async (retries = 3) => {
     setLoadingLots(true)
-    try {
-      const data = await api('/api/lots')
-      setLots(Array.isArray(data) ? data : [])
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setLoadingLots(false)
+    for (let i = 0; i < retries; i++) {
+      try {
+        const data = await api('/api/lots')
+        setLots(Array.isArray(data) ? data : [])
+        setLoadingLots(false)
+        return // Success
+      } catch (e) {
+        console.error(`Failed to load lots (attempt ${i + 1}/${retries}):`, e)
+        if (i === retries - 1) {
+          setError('Failed to load lots: ' + e.message)
+          setLoadingLots(false)
+        } else {
+          await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)))
+        }
+      }
     }
   }
 
-  const loadAccounts = async () => {
-    try {
-      const data = await api('/api/accounts')
-      setAccounts(Array.isArray(data) ? data : [])
-    } catch (e) {
-      setError(e.message)
+  const loadAccounts = async (retries = 3) => {
+    for (let i = 0; i < retries; i++) {
+      try {
+        const data = await api('/api/accounts')
+        setAccounts(Array.isArray(data) ? data : [])
+        return // Success
+      } catch (e) {
+        console.error(`Failed to load accounts (attempt ${i + 1}/${retries}):`, e)
+        if (i === retries - 1) {
+          setError('Failed to load accounts: ' + e.message)
+        } else {
+          await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)))
+        }
+      }
     }
   }
 

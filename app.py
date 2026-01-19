@@ -1533,15 +1533,41 @@ def list_messages(
 
 @app.get("/api/lots")
 async def list_lots():
+    """Get lots/offers with improved error handling (AUTO-STEAM-RENT style)."""
     client: Optional[FunpayClient] = getattr(app.state, "fp_client", None)
     if not client:
         raise HTTPException(status_code=400, detail="No active session. Set Golden Key first.")
-    try:
-        offers = await client.get_offers()
-        return offers
-    except Exception as exc:
-        logging.exception("Failed to get lots/offers")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch offers: {str(exc)}")
+    
+    # Try multiple times with better error handling
+    last_error = None
+    for attempt in range(3):
+        try:
+            offers = await client.get_offers()
+            if offers:
+                return offers
+            # If empty, might be temporary, try again
+            if attempt < 2:
+                await asyncio.sleep(1)
+                continue
+            return []  # Return empty array instead of error
+        except httpx.HTTPStatusError as exc:
+            last_error = exc
+            if exc.response.status_code == 429:
+                # Rate limited - wait longer
+                if attempt < 2:
+                    await asyncio.sleep(5)
+                    continue
+            elif exc.response.status_code == 401:
+                raise HTTPException(status_code=401, detail="Unauthorized. Check Golden Key.")
+        except Exception as exc:
+            last_error = exc
+            if attempt < 2:
+                await asyncio.sleep(1)
+                continue
+    
+    # If all attempts failed, return empty array instead of error
+    logging.warning("Failed to load lots after retries: %s", last_error)
+    return []
 
 
 @app.get("/api/accounts")
