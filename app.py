@@ -568,7 +568,10 @@ class FunpayClient:
         soup = BeautifulSoup(resp.text, "html.parser")
         header_text = " ".join(th.get_text(" ", strip=True) for th in soup.select("th, .tc-th"))
         header_text = header_text.lower()
-        page_is_sales = "покупатель" in header_text
+        buyer_tokens = ["покупатель", "buyer"]
+        seller_tokens = ["продавец", "seller"]
+        page_is_sales = any(token in header_text for token in buyer_tokens)
+        page_is_buys = any(token in header_text for token in seller_tokens)
         orders: list[dict] = []
         for item in soup.select(".tc-item"):
             order_id = None
@@ -616,6 +619,7 @@ class FunpayClient:
                     "product": product,
                     "amount": amount,
                     "page_is_sales": page_is_sales,
+                    "page_is_buys": page_is_buys,
                 }
             )
         return orders
@@ -1006,7 +1010,7 @@ async def list_orders(session: Session = Depends(get_session)):
         status_key = status_text.lower()
         if status_key not in {"оплачен", "paid"}:
             continue
-        if not item.get("page_is_sales"):
+        if item.get("page_is_buys"):
             continue
         order_id = item.get("order_id")
         if not order_id:
