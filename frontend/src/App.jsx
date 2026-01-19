@@ -59,6 +59,7 @@ export default function App() {
     steamId: '',
     guard: '',
   })
+  const [accountGuards, setAccountGuards] = useState({})
 
   const isNarrow = useMediaQuery('(max-width: 900px)')
   const isWide = useMediaQuery('(min-width: 1400px)')
@@ -203,6 +204,28 @@ export default function App() {
         }),
       })
       setAccountForm({ label: '', username: '', password: '', steamId: '', guard: '' })
+      loadAccounts()
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  const loginAccount = async (accountId) => {
+    try {
+      await api(`/api/accounts/${accountId}/login`, {
+        method: 'POST',
+        body: JSON.stringify({ guard_code: accountGuards[accountId] || '' }),
+      })
+      setAccountGuards((prev) => ({ ...prev, [accountId]: '' }))
+      loadAccounts()
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  const logoutAccount = async (accountId) => {
+    try {
+      await api(`/api/accounts/${accountId}/logout`, { method: 'POST' })
       loadAccounts()
     } catch (e) {
       setError(e.message)
@@ -479,7 +502,7 @@ export default function App() {
                     )}
                     {accounts.map((acc) => (
                       <Paper key={acc.id} withBorder radius="md" p="sm">
-                        <Group justify="space-between" wrap="nowrap">
+                        <Group justify="space-between" wrap="nowrap" align="flex-start">
                           <Box style={{ minWidth: 0 }}>
                             <Text size="sm" fw={600} truncate>
                               {acc.label || acc.username}
@@ -487,6 +510,22 @@ export default function App() {
                             <Text size="xs" c="dimmed" truncate>
                               {acc.steam_id || 'SteamID not set'}
                             </Text>
+                            <Group gap="xs" mt={6}>
+                              <TextInput
+                                size="xs"
+                                placeholder="Guard code"
+                                value={accountGuards[acc.id] || ''}
+                                onChange={(e) =>
+                                  setAccountGuards((prev) => ({ ...prev, [acc.id]: e.target.value }))
+                                }
+                              />
+                              <Button size="xs" onClick={() => loginAccount(acc.id)}>
+                                Login
+                              </Button>
+                              <Button size="xs" variant="subtle" onClick={() => logoutAccount(acc.id)}>
+                                Logout
+                              </Button>
+                            </Group>
                           </Box>
                           <Badge color="gray" variant="light">
                             {acc.login_status || 'idle'}
