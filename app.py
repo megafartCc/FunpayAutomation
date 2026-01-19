@@ -1533,37 +1533,63 @@ async def change_steam_password_endpoint(account_id: int, payload: ChangePasswor
             logging.info("Attempting to use httpx with SteamClient cookies for account %s", account_id)
             try:
                 # Try to get cookies from SteamClient's internal state
-                # Some SteamClient implementations store cookies in _session or similar
                 cookies_dict = {}
                 
                 # Check various possible cookie storage locations
                 if hasattr(client, "_session") and hasattr(client._session, "cookies"):
                     for cookie in client._session.cookies:
                         cookies_dict[cookie.name] = cookie.value
+                        logging.debug("Found cookie %s from _session", cookie.name)
                 elif hasattr(client, "session") and hasattr(client.session, "cookies"):
                     for cookie in client.session.cookies:
                         cookies_dict[cookie.name] = cookie.value
+                        logging.debug("Found cookie %s from session", cookie.name)
                 elif hasattr(client, "cookies"):
                     cookies_dict = dict(client.cookies) if isinstance(client.cookies, dict) else {}
+                    logging.debug("Found cookies dict: %s", list(cookies_dict.keys()))
                 
-                # If we found cookies, create an httpx client with them
-                if cookies_dict:
-                    # Create a temporary httpx client with cookies
-                    async with httpx.AsyncClient(cookies=cookies_dict, timeout=30.0) as http_client:
-                        # Try to get sessionid from cookies
-                        sessionid = cookies_dict.get('sessionid')
-                        if not sessionid:
-                            # Try to get it from a test request
-                            test_resp = await http_client.get('https://store.steampowered.com/account/')
-                            if test_resp.status_code == 200:
-                                # Extract sessionid from response cookies
-                                for cookie in http_client.cookies:
-                                    if cookie.name == 'sessionid':
-                                        sessionid = cookie.value
-                                        break
+                # Also try to get cookies from web_session if it exists but wasn't accessible earlier
+                if not cookies_dict and hasattr(client, "web_session") and client.web_session:
+                    try:
+                        if hasattr(client.web_session, "cookies"):
+                            for cookie in client.web_session.cookies:
+                                cookies_dict[cookie.name] = cookie.value
+                                logging.debug("Found cookie %s from web_session", cookie.name)
+                    except:
+                        pass
+                
+                # If we still don't have cookies, try to get a web session by making a request
+                # SteamClient might have an internal HTTP client we can use
+                if not cookies_dict:
+                    # Try to use get_web_session() which might work even if web_session property doesn't exist
+                    try:
+                        if hasattr(client, "get_web_session"):
+                            def _try_get_session():
+                                try:
+                                    return client.get_web_session()
+                                except:
+                                    return None
+                            temp_session = await asyncio.to_thread(_try_get_session)
+                            if temp_session and hasattr(temp_session, "cookies"):
+                                for cookie in temp_session.cookies:
+                                    cookies_dict[cookie.name] = cookie.value
+                                    logging.debug("Found cookie %s from get_web_session()", cookie.name)
+                                web_session = temp_session  # Use this session directly
+                    except Exception as e:
+                        logging.debug("get_web_session() attempt failed: %s", e)
+                
+                # If we found cookies or have a web_session, try password change
+                if cookies_dict or web_session:
+                    # Use web_session if we have it, otherwise use httpx with cookies
+                    if web_session:
+                        # Use web_session directly
+                        sessionid = None
+                        if hasattr(web_session, 'cookies'):
+                            sessionid = web_session.cookies.get('sessionid', domain='steamcommunity.com')
+                            if not sessionid:
+                                sessionid = web_session.cookies.get('sessionid', domain='store.steampowered.com')
                         
                         if sessionid:
-                            # Use httpx directly for password change
                             form_data = {
                                 'sessionid': sessionid,
                                 'password': account.password,
@@ -1571,39 +1597,85 @@ async def change_steam_password_endpoint(account_id: int, payload: ChangePasswor
                                 'renewpassword': new_password
                             }
                             
-                            response = await http_client.post(
-                                'https://store.steampowered.com/account/changepassword_finish',
-                                data=form_data,
-                                headers={'Referer': 'https://store.steampowered.com/account/changepassword'}
-                            )
+                            def _change_password_request():
+                                return web_session.post(
+                                    'https://store.steampowered.com/account/changepassword_finish',
+                                    data=form_data,
+                                    headers={'Referer': 'https://store.steampowered.com/account/changepassword'}
+                                )
+                            
+                            response = await asyncio.to_thread(_change_password_request)
                             
                             if 'successfully changed' in response.text.lower():
-                                # Update password in database
                                 account.password = new_password
                                 account.updated_at = time.time()
                                 session.add(account)
                                 session.commit()
-                                
-                                logging.info("Password changed successfully for account %s (via httpx)", account_id)
+                                logging.info("Password changed successfully for account %s (via web_session)", account_id)
                                 return {"status": "ok", "message": "Password changed successfully."}
+                    else:
+                        # Use httpx with cookies
+                        async with httpx.AsyncClient(cookies=cookies_dict, timeout=30.0) as http_client:
+                            # Try to get sessionid from cookies
+                            sessionid = cookies_dict.get('sessionid')
+                            if not sessionid:
+                                # Try to get it from a test request
+                                test_resp = await http_client.get('https://store.steampowered.com/account/')
+                                if test_resp.status_code == 200:
+                                    # Extract sessionid from response cookies
+                                    for cookie in http_client.cookies:
+                                        if cookie.name == 'sessionid':
+                                            sessionid = cookie.value
+                                            break
+                            
+                            if sessionid:
+                                # Use httpx directly for password change
+                                form_data = {
+                                    'sessionid': sessionid,
+                                    'password': account.password,
+                                    'newpassword': new_password,
+                                    'renewpassword': new_password
+                                }
+                                
+                                response = await http_client.post(
+                                    'https://store.steampowered.com/account/changepassword_finish',
+                                    data=form_data,
+                                    headers={'Referer': 'https://store.steampowered.com/account/changepassword'}
+                                )
+                                
+                                if 'successfully changed' in response.text.lower():
+                                    # Update password in database
+                                    account.password = new_password
+                                    account.updated_at = time.time()
+                                    session.add(account)
+                                    session.commit()
+                                    
+                                    logging.info("Password changed successfully for account %s (via httpx)", account_id)
+                                    return {"status": "ok", "message": "Password changed successfully."}
+                                else:
+                                    # Try to extract error message
+                                    error_msg = "Password change failed. Check your current password or try again."
+                                    try:
+                                        from bs4 import BeautifulSoup
+                                        soup = BeautifulSoup(response.text, 'html.parser')
+                                        error_div = soup.find('div', class_='error_message')
+                                        if error_div:
+                                            error_msg = error_div.get_text(strip=True)
+                                    except:
+                                        pass
+                                    raise HTTPException(status_code=400, detail=error_msg)
                             else:
-                                # Try to extract error message
-                                error_msg = "Password change failed. Check your current password or try again."
-                                try:
-                                    from bs4 import BeautifulSoup
-                                    soup = BeautifulSoup(response.text, 'html.parser')
-                                    error_div = soup.find('div', class_='error_message')
-                                    if error_div:
-                                        error_msg = error_div.get_text(strip=True)
-                                except:
-                                    pass
-                                raise HTTPException(status_code=400, detail=error_msg)
+                                logging.warning("Could not find sessionid in cookies for account %s", account_id)
+                else:
+                    logging.warning("Could not extract cookies from SteamClient for account %s", account_id)
             except HTTPException:
                 raise
             except Exception as e:
                 logging.warning("httpx approach failed for account %s: %s", account_id, e)
         
-        # Method 4: Fallback to WebAuth only if client is not logged on
+        # Method 4: Skip WebAuth - it's unreliable and the account should already be logged in
+        # If we still don't have a web_session, it means we couldn't extract it from SteamClient
+        # In this case, we should tell the user to ensure the account is properly logged in
         if not web_session:
             if not logged_on:
                 raise HTTPException(
@@ -1611,65 +1683,12 @@ async def change_steam_password_endpoint(account_id: int, payload: ChangePasswor
                     detail="Account is not logged in. Please log in to the account first before changing the password."
                 )
             
-            logging.info("SteamClient doesn't have web_session, creating WebAuth session for account %s", account_id)
-            
-            # Generate 2FA code if available
-            two_factor_code = None
-            if account.twofa_otp:
-                try:
-                    import base64
-                    import hmac
-                    import hashlib
-                    import struct
-                    secret_bytes = base64.b64decode(account.twofa_otp)
-                    timestamp = int(time.time()) // 30
-                    msg = struct.pack(">Q", timestamp)
-                    hmac_hash = hmac.new(secret_bytes, msg, hashlib.sha1).digest()
-                    offset = hmac_hash[-1] & 0x0F
-                    code_int = int.from_bytes(hmac_hash[offset:offset + 4], "big") & 0x7FFFFFFF
-                    alphabet = "23456789BCDFGHJKMNPQRTVWXY"
-                    two_factor_code = ""
-                    for _ in range(5):
-                        two_factor_code += alphabet[code_int % len(alphabet)]
-                        code_int //= len(alphabet)
-                except Exception as e:
-                    logging.warning("Failed to generate 2FA code for password change: %s", e)
-            
-            # Create WebAuth session (run in executor since it's synchronous)
-            def _create_webauth_session():
-                wa = WebAuth(account.username)
-                return wa.login(
-                    password=account.password,
-                    twofactor_code=two_factor_code
-                )
-            
-            try:
-                web_session = await asyncio.to_thread(_create_webauth_session)
-                logging.info("Created WebAuth session for password change (account %s)", account_id)
-            except Exception as e:
-                logging.exception("WebAuth login failed for password change: %s", e)
-                # Provide more helpful error message
-                error_detail = str(e)
-                if "captcha" in error_detail.lower():
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Password change requires solving a captcha. Please try logging in via the web interface first."
-                    )
-                elif "email" in error_detail.lower() or "code" in error_detail.lower():
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Password change requires email verification. Please ensure the account is fully logged in first."
-                    )
-                else:
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Failed to create web session for password change. Please ensure the account is properly logged in. Error: {error_detail}"
-                    )
-        
-        if not web_session:
+            # Account is logged on but we can't get web session
+            # This shouldn't happen if SteamClient is properly initialized
+            logging.error("SteamClient is logged on but web session is unavailable for account %s", account_id)
             raise HTTPException(
                 status_code=500,
-                detail="Could not obtain web session for password change. Please ensure the account is logged in."
+                detail="Could not access web session for password change. The account appears to be logged in, but web session access failed. Please try logging out and logging back in, then try again."
             )
         
         # Get sessionid from the web session
