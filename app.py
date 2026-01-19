@@ -655,7 +655,11 @@ async def list_nodes(session: Session = Depends(get_session)):
 
 
 @app.get("/api/dialogs")
-async def list_dialogs(session: Session = Depends(get_session)):
+async def list_dialogs(
+    resolve: bool = Query(False, description="Resolve missing user_id/avatar via chat page."),
+    resolve_limit: int = Query(50, ge=0, le=200),
+    session: Session = Depends(get_session),
+):
     client: Optional[FunpayClient] = getattr(app.state, "fp_client", None)
     if not client:
         raise HTTPException(status_code=400, detail="No active session. Set Golden Key first.")
@@ -682,6 +686,8 @@ async def list_dialogs(session: Session = Depends(get_session)):
     ttl = getattr(app.state, "dialog_cache_ttl", 900)
     result = []
 
+    resolved_count = 0
+
     for dialog in dialogs:
         node_id = dialog.get("node_id")
         if not node_id:
@@ -693,11 +699,29 @@ async def list_dialogs(session: Session = Depends(get_session)):
         avatar = dialog.get("avatar")
 
         # Avoid per-dialog /chat/?node=... requests (rate limits).
-        # We resolve user_id lazily when the user opens a dialog via /api/messages/sync.
+        # Optionally resolve missing data on demand.
         if cached:
             user_id = cached.get("user_id")
             name = cached.get("name") or name
             avatar = cached.get("avatar") or avatar
+        if resolve and resolved_count < resolve_limit and (not user_id or not avatar):
+            try:
+                info = await client.get_partner_from_node(node_id)
+                user_id = info.get("user_id") or user_id
+                name = info.get("name") or name
+                avatar = info.get("avatar") or avatar
+                cache[node_id] = {
+                    "user_id": user_id,
+                    "name": name,
+                    "avatar": avatar,
+                    "ts": now,
+                }
+                resolved_count += 1
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 429:
+                    break
+            except Exception:
+                pass
 
         result.append(
             {

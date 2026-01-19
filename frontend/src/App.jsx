@@ -87,7 +87,7 @@ export default function App() {
 
   const loadDialogs = async () => {
     try {
-      const data = await api('/api/dialogs')
+      const data = await api('/api/dialogs?resolve=1&resolve_limit=200')
       setDialogs(data)
     } catch (e) {
       setError(e.message)
