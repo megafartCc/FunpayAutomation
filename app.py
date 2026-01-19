@@ -1,8 +1,14 @@
 import asyncio
+import base64
 import contextlib
+import hashlib
+import hmac
 import json
 import logging
 import os
+import secrets
+import string
+import struct
 import time
 import re
 from dataclasses import dataclass
@@ -153,6 +159,218 @@ def normalize_avatar_url(base_url: str, url: Optional[str]) -> Optional[str]:
     return url
 
 
+# -------- Steam helpers --------
+STEAM_GUARD_ALPHABET = "23456789BCDFGHJKMNPQRTVWXY"
+_steam_client_class = None
+
+
+def _ensure_event_loop() -> asyncio.AbstractEventLoop:
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    try:
+        return asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop
+
+
+def get_steam_client_class():
+    global _steam_client_class
+    if _steam_client_class is not None:
+        return _steam_client_class
+    try:
+        from steam.client import SteamClient as BaseSteamClient
+        from eventemitter import EventEmitter
+    except ImportError as exc:
+        raise RuntimeError("Steam dependencies missing. Install steam and eventemitter.") from exc
+
+    class SteamClient(BaseSteamClient):
+        def __init__(self, *args, **kwargs):
+            loop = _ensure_event_loop()
+            super().__init__(*args, **kwargs)
+            if not hasattr(self, "wait_event"):
+                EventEmitter.__init__(self, loop=loop)
+            if not hasattr(self, "wait_event"):
+                import types
+
+                ee_temp = EventEmitter(loop=loop)
+                for attr_name in dir(ee_temp):
+                    if attr_name.startswith("_"):
+                        continue
+                    value = getattr(ee_temp, attr_name, None)
+                    if callable(value) and not hasattr(self, attr_name):
+                        setattr(self, attr_name, types.MethodType(value.__func__, self))
+
+    _steam_client_class = SteamClient
+    return SteamClient
+
+
+def generate_steam_guard_code(shared_secret: str) -> Optional[str]:
+    try:
+        secret_bytes = base64.b64decode(shared_secret)
+    except Exception:
+        return None
+    timestamp = int(time.time()) // 30
+    msg = struct.pack(">Q", timestamp)
+    hmac_hash = hmac.new(secret_bytes, msg, hashlib.sha1).digest()
+    offset = hmac_hash[-1] & 0x0F
+    code_int = int.from_bytes(hmac_hash[offset:offset + 4], "big") & 0x7FFFFFFF
+    code = ""
+    for _ in range(5):
+        code += STEAM_GUARD_ALPHABET[code_int % len(STEAM_GUARD_ALPHABET)]
+        code_int //= len(STEAM_GUARD_ALPHABET)
+    return code
+
+
+def normalize_guard_code(code: Optional[str]) -> Optional[str]:
+    if not code:
+        return None
+    cleaned = code.strip().upper()
+    if re.fullmatch(r"[A-Z0-9]{5}", cleaned):
+        return cleaned
+    return None
+
+
+def resolve_guard_code(stored: Optional[str]) -> Optional[str]:
+    if not stored:
+        return None
+    generated = generate_steam_guard_code(stored)
+    if generated:
+        return generated
+    return normalize_guard_code(stored)
+
+
+def generate_password(length: int = 16) -> str:
+    alphabet = string.ascii_letters + string.digits + "!@#$"
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def safe_disconnect(client) -> None:
+    if not client:
+        return
+    try:
+        if getattr(client, "logged_on", False):
+            client.logout()
+        elif hasattr(client, "disconnect"):
+            client.disconnect()
+    except Exception:
+        pass
+
+
+def map_login_result(result) -> str:
+    try:
+        from steam.enums import EResult
+    except ImportError:
+        return "error:exception"
+
+    if result == "connect":
+        return "error:connect"
+    if result == EResult.OK:
+        return "online"
+    if result == EResult.AccountLogonDenied:
+        return "guard:email"
+    if result == EResult.AccountLoginDeniedNeedTwoFactor:
+        return "guard:twofactor"
+    if result in {EResult.InvalidPassword}:
+        return "error:invalid_password"
+    if hasattr(EResult, "AccountNotFound") and result == EResult.AccountNotFound:
+        return "error:account_not_found"
+    if hasattr(EResult, "AccountLoginDeniedThrottle") and result == EResult.AccountLoginDeniedThrottle:
+        return "error:rate_limit"
+    if hasattr(EResult, "RateLimitExceeded") and result == EResult.RateLimitExceeded:
+        return "error:rate_limit"
+    if hasattr(EResult, "InvalidLoginAuthCode") and result == EResult.InvalidLoginAuthCode:
+        return "error:invalid_auth_code"
+    return "error:exception"
+
+
+def login_error_message(status: str) -> str:
+    if status == "guard:email":
+        return "Email guard code required. Use login with the email code first."
+    if status == "guard:twofactor":
+        return "Two-factor code required. Use login with the 2FA code first."
+    if status == "error:invalid_password":
+        return "Invalid username or password."
+    if status == "error:invalid_auth_code":
+        return "Invalid guard code."
+    if status == "error:account_not_found":
+        return "Steam account not found."
+    if status == "error:rate_limit":
+        return "Steam rate limit. Try again later."
+    if status == "error:connect":
+        return "Failed to connect to Steam."
+    return "Steam login failed."
+
+
+def steam_login(account, guard_code: Optional[str] = None):
+    SteamClient = get_steam_client_class()
+    try:
+        from steam.enums import EResult
+    except ImportError as exc:
+        raise RuntimeError("Steam dependency missing: steam") from exc
+
+    client = SteamClient()
+    if not client.connect():
+        return None, "connect"
+
+    auth_code = None
+    two_factor_code = None
+    cleaned_guard = normalize_guard_code(guard_code)
+    if cleaned_guard:
+        if account.login_status == "guard:email":
+            auth_code = cleaned_guard
+        else:
+            two_factor_code = cleaned_guard
+    else:
+        fallback = resolve_guard_code(account.twofa_otp)
+        if fallback:
+            two_factor_code = fallback
+
+    result = client.login(
+        account.username,
+        account.password,
+        two_factor_code=two_factor_code,
+        auth_code=auth_code,
+    )
+    if result is None:
+        result = EResult.Fail
+    return client, result
+
+
+def deauthorize_all_sessions(client) -> bool:
+    try:
+        client.web_logoff()
+        return True
+    except Exception:
+        return False
+
+
+def change_steam_password(client, old_password: str, new_password: str) -> bool:
+    try:
+        sessionid = client.web_session.cookies.get("sessionid", domain="steamcommunity.com")
+        if not sessionid:
+            sessionid = client.web_session.cookies.get("sessionid")
+        if not sessionid:
+            return False
+        form_data = {
+            "sessionid": sessionid,
+            "password": old_password,
+            "newpassword": new_password,
+            "renewpassword": new_password,
+        }
+        response = client.web_session.post(
+            "https://store.steampowered.com/account/changepassword_finish",
+            data=form_data,
+            headers={"Referer": "https://store.steampowered.com/account/changepassword"},
+        )
+        return "successfully changed" in response.text.lower()
+    except Exception:
+        return False
+
+
 # -------- Database --------
 def build_database_url() -> str:
     explicit_url = os.getenv("DATABASE_URL") or os.getenv("FUNPAY_DATABASE_URL")
@@ -190,6 +408,16 @@ class Message(SQLModel, table=True):
     body: Optional[str] = None
     created_at: Optional[str] = None
     raw: Optional[str] = None
+
+
+class Account(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    label: Optional[str] = None
+    username: str = Field(index=True)
+    password: str
+    steam_id: Optional[str] = None
+    login_status: str = Field(default="idle")
+    twofa_otp: Optional[str] = None
 
 
 
@@ -1274,6 +1502,230 @@ class UpdatePrice(SQLModel):
     node: str
     offer: str
     price: float
+
+
+class AccountCreate(SQLModel):
+    label: Optional[str] = None
+    username: str
+    password: str
+    steam_id: Optional[str] = None
+    login_status: Optional[str] = None
+    twofa_otp: Optional[str] = None
+
+
+class AccountUpdate(SQLModel):
+    label: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    steam_id: Optional[str] = None
+    login_status: Optional[str] = None
+    twofa_otp: Optional[str] = None
+
+
+class AccountLogin(SQLModel):
+    guard_code: Optional[str] = None
+    email_code: Optional[str] = None
+
+
+class AccountPasswordChange(SQLModel):
+    new_password: str
+
+
+def account_to_dict(account: Account) -> dict:
+    return {
+        "id": account.id,
+        "label": account.label,
+        "username": account.username,
+        "steam_id": account.steam_id,
+        "login_status": account.login_status,
+        "has_twofa_otp": bool(account.twofa_otp),
+    }
+
+
+def get_account_or_404(session: Session, account_id: int) -> Account:
+    account = session.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found.")
+    return account
+
+
+def login_or_raise(session: Session, account: Account) -> object:
+    client, result = steam_login(account)
+    if result is None:
+        safe_disconnect(client)
+        account.login_status = "error:exception"
+        session.add(account)
+        session.commit()
+        raise HTTPException(status_code=500, detail="Steam login failed.")
+
+    status = map_login_result(result)
+    account.login_status = status
+    if status != "online":
+        session.add(account)
+        session.commit()
+        safe_disconnect(client)
+        raise HTTPException(status_code=400, detail=login_error_message(status))
+
+    if not account.steam_id and getattr(client, "steam_id", None):
+        account.steam_id = str(client.steam_id)
+    session.add(account)
+    session.commit()
+    return client
+
+
+@app.get("/api/accounts")
+def list_accounts(session: Session = Depends(get_session)):
+    accounts = session.exec(select(Account)).all()
+    return [account_to_dict(account) for account in accounts]
+
+
+@app.post("/api/accounts")
+def create_account(payload: AccountCreate, session: Session = Depends(get_session)):
+    username = payload.username.strip()
+    password = payload.password.strip()
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="Username and password are required.")
+
+    existing = session.exec(select(Account).where(Account.username == username)).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="Account already exists.")
+
+    account = Account(
+        label=(payload.label or "").strip() or None,
+        username=username,
+        password=password,
+        steam_id=(payload.steam_id or "").strip() or None,
+        login_status=payload.login_status or "idle",
+        twofa_otp=(payload.twofa_otp or "").strip() or None,
+    )
+    session.add(account)
+    session.commit()
+    session.refresh(account)
+    return account_to_dict(account)
+
+
+@app.put("/api/accounts/{account_id}")
+def update_account(
+    account_id: int,
+    payload: AccountUpdate,
+    session: Session = Depends(get_session),
+):
+    account = get_account_or_404(session, account_id)
+    if payload.label is not None:
+        account.label = payload.label.strip() or None
+    if payload.username is not None:
+        account.username = payload.username.strip()
+    if payload.password is not None:
+        account.password = payload.password.strip()
+    if payload.steam_id is not None:
+        account.steam_id = payload.steam_id.strip() or None
+    if payload.login_status is not None:
+        account.login_status = payload.login_status.strip() or "idle"
+    if payload.twofa_otp is not None:
+        account.twofa_otp = payload.twofa_otp.strip() or None
+    session.add(account)
+    session.commit()
+    session.refresh(account)
+    return account_to_dict(account)
+
+
+@app.post("/api/accounts/{account_id}/login")
+def login_account(
+    account_id: int,
+    payload: AccountLogin,
+    session: Session = Depends(get_session),
+):
+    account = get_account_or_404(session, account_id)
+    guard_code = payload.guard_code or payload.email_code
+    try:
+        client, result = steam_login(account, guard_code=guard_code)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    status = map_login_result(result)
+    account.login_status = status
+    if status == "online" and not account.steam_id and getattr(client, "steam_id", None):
+        account.steam_id = str(client.steam_id)
+    session.add(account)
+    session.commit()
+    safe_disconnect(client)
+    return {"status": account.login_status}
+
+
+@app.post("/api/accounts/{account_id}/logout")
+def logout_account(account_id: int, session: Session = Depends(get_session)):
+    account = get_account_or_404(session, account_id)
+    account.login_status = "idle"
+    session.add(account)
+    session.commit()
+    return {"status": "ok"}
+
+
+@app.post("/api/accounts/{account_id}/deauthorize")
+def deauthorize_account(account_id: int, session: Session = Depends(get_session)):
+    account = get_account_or_404(session, account_id)
+    client = login_or_raise(session, account)
+    ok = deauthorize_all_sessions(client)
+    safe_disconnect(client)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to deauthorize sessions.")
+    return {"status": "ok"}
+
+
+@app.post("/api/accounts/{account_id}/change-password")
+def change_password(
+    account_id: int,
+    payload: AccountPasswordChange,
+    session: Session = Depends(get_session),
+):
+    new_password = payload.new_password.strip()
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+
+    account = get_account_or_404(session, account_id)
+    client = login_or_raise(session, account)
+    ok = change_steam_password(client, account.password, new_password)
+    safe_disconnect(client)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to change password.")
+    account.password = new_password
+    session.add(account)
+    session.commit()
+    return {"status": "ok"}
+
+
+@app.post("/api/accounts/{account_id}/stop-rental")
+def stop_rental(account_id: int, session: Session = Depends(get_session)):
+    account = get_account_or_404(session, account_id)
+    client = login_or_raise(session, account)
+    warnings: list[str] = []
+
+    if not deauthorize_all_sessions(client):
+        warnings.append("Failed to deauthorize sessions.")
+
+    new_password = generate_password()
+    if change_steam_password(client, account.password, new_password):
+        account.password = new_password
+    else:
+        warnings.append("Failed to change password.")
+
+    session.add(account)
+    session.commit()
+    safe_disconnect(client)
+
+    message = "Stop rental completed."
+    if warnings:
+        message = "Stop rental completed with warnings."
+    return {"status": "ok", "message": message, "warnings": warnings, "new_password": new_password}
+
+
+@app.get("/api/accounts/{account_id}/code")
+def get_twofa_code(account_id: int, session: Session = Depends(get_session)):
+    account = get_account_or_404(session, account_id)
+    code = resolve_guard_code(account.twofa_otp)
+    if not code:
+        raise HTTPException(status_code=400, detail="No 2FA secret configured.")
+    return {"code": code}
 
 
 

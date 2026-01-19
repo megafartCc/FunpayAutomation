@@ -8,7 +8,6 @@ import {
   Button,
   Divider,
   Group,
-  Loader,
   Modal,
   Paper,
   PasswordInput,
@@ -17,7 +16,6 @@ import {
   Text,
   Textarea,
   TextInput,
-  Tooltip,
 } from '@mantine/core'
 import { useMediaQuery } from '@mantine/hooks'
 
@@ -26,10 +24,9 @@ const api = async (path, options = {}) => {
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     ...options,
   })
-  
-  // Read response body once
+
   const text = await res.text()
-  
+
   if (!res.ok) {
     let detail
     try {
@@ -40,13 +37,54 @@ const api = async (path, options = {}) => {
     }
     throw new Error(detail || res.statusText)
   }
-  
-  // Parse the already-read text
+
   try {
     return JSON.parse(text || '{}')
   } catch {
     return text
   }
+}
+
+const getAccountStatusInfo = (status) => {
+  if (status === 'online') {
+    return { color: 'green', label: 'Online' }
+  }
+  if (status === 'guard:email') {
+    return { color: 'yellow', label: 'Email Code Required' }
+  }
+  if (status === 'guard:twofactor') {
+    return { color: 'yellow', label: '2FA Code Required' }
+  }
+  if (status && status.startsWith('error:')) {
+    const key = status.split(':')[1] || 'unknown'
+    const labels = {
+      invalid_password: 'Invalid Password',
+      invalid_auth_code: 'Invalid Code',
+      account_not_found: 'Account Not Found',
+      rate_limit: 'Rate Limited',
+      init: 'Init Failed',
+      connect: 'Connection Failed',
+      exception: 'Login Error',
+    }
+    return { color: 'red', label: labels[key] || 'Error' }
+  }
+  return { color: 'gray', label: 'Idle' }
+}
+
+const getAccountErrorText = (status) => {
+  if (status === 'error:invalid_password') {
+    return 'Invalid username or password. Please check your credentials.'
+  }
+  if (status === 'error:invalid_auth_code') {
+    return 'The code you entered is incorrect or expired. Please try again.'
+  }
+  if (status === 'error:rate_limit') {
+    return 'Too many login attempts. Please wait a few minutes before trying again.'
+  }
+  if (status === 'error:account_not_found') {
+    return 'Steam account not found. Check your username.'
+  }
+  return 'An error occurred during login. Please try again.'
 }
 
 export default function App() {
@@ -59,6 +97,17 @@ export default function App() {
   const [loadingMsgs, setLoadingMsgs] = useState(false)
   const [lots, setLots] = useState([])
   const [loadingLots, setLoadingLots] = useState(false)
+  const [accounts, setAccounts] = useState([])
+  const [accountForm, setAccountForm] = useState({
+    label: '',
+    username: '',
+    password: '',
+    steamId: '',
+    guard: '',
+  })
+  const [accountBusy, setAccountBusy] = useState({})
+  const [loginCodes, setLoginCodes] = useState({})
+  const [passwordModal, setPasswordModal] = useState(null)
   const [error, setError] = useState('')
 
   const isNarrow = useMediaQuery('(max-width: 900px)')
@@ -78,6 +127,7 @@ export default function App() {
     loadSession()
     loadDialogs()
     loadLots()
+    loadAccounts()
     const dialogsTimer = setInterval(loadDialogs, 30000)
     return () => {
       clearInterval(dialogsTimer)
@@ -105,14 +155,13 @@ export default function App() {
       try {
         const data = await api('/api/dialogs?resolve=1&resolve_limit=200')
         setDialogs(Array.isArray(data) ? data : [])
-        return // Success
+        return
       } catch (e) {
         console.error(`Failed to load dialogs (attempt ${i + 1}/${retries}):`, e)
         if (i === retries - 1) {
-          // Last attempt failed - don't block, just log
           console.warn('Dialogs failed to load after retries')
         } else {
-          await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)))
+          await new Promise((resolve) => setTimeout(resolve, 1000 * (i + 1)))
         }
       }
     }
@@ -125,19 +174,35 @@ export default function App() {
         const data = await api('/api/lots')
         setLots(Array.isArray(data) ? data : [])
         setLoadingLots(false)
-        return // Success
+        return
       } catch (e) {
         console.error(`Failed to load lots (attempt ${i + 1}/${retries}):`, e)
         if (i === retries - 1) {
           setError('Failed to load lots: ' + e.message)
           setLoadingLots(false)
         } else {
-          await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)))
+          await new Promise((resolve) => setTimeout(resolve, 1000 * (i + 1)))
         }
       }
     }
   }
 
+  const loadAccounts = async (retries = 3) => {
+    for (let i = 0; i < retries; i++) {
+      try {
+        const data = await api('/api/accounts')
+        setAccounts(Array.isArray(data) ? data : [])
+        return
+      } catch (e) {
+        console.error(`Failed to load accounts (attempt ${i + 1}/${retries}):`, e)
+        if (i === retries - 1) {
+          setError('Failed to load accounts: ' + e.message)
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 1000 * (i + 1)))
+        }
+      }
+    }
+  }
 
   const syncMessages = async (nodeId, chatNode, limit = 150) => {
     if (!nodeId && !chatNode) return null
@@ -197,6 +262,117 @@ export default function App() {
     }
   }
 
+  const addAccount = async () => {
+    if (!accountForm.username.trim() || !accountForm.password.trim()) return
+    try {
+      await api('/api/accounts', {
+        method: 'POST',
+        body: JSON.stringify({
+          label: accountForm.label.trim() || null,
+          username: accountForm.username.trim(),
+          password: accountForm.password.trim(),
+          steam_id: accountForm.steamId.trim() || null,
+          login_status: 'idle',
+          twofa_otp: accountForm.guard.trim() || null,
+        }),
+      })
+      setAccountForm({ label: '', username: '', password: '', steamId: '', guard: '' })
+      await loadAccounts()
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  const loginAccount = async (accountId) => {
+    setAccountBusy((prev) => ({ ...prev, [accountId]: true }))
+    setError('')
+    try {
+      const code = loginCodes[accountId] || ''
+      await api(`/api/accounts/${accountId}/login`, {
+        method: 'POST',
+        body: JSON.stringify({ guard_code: code, email_code: code }),
+      })
+      setLoginCodes((prev) => ({ ...prev, [accountId]: '' }))
+      await loadAccounts()
+    } catch (e) {
+      setError(e.message || 'Login failed')
+      await loadAccounts()
+    } finally {
+      setAccountBusy((prev) => ({ ...prev, [accountId]: false }))
+    }
+  }
+
+  const logoutAccount = async (accountId) => {
+    try {
+      await api(`/api/accounts/${accountId}/logout`, { method: 'POST' })
+      await loadAccounts()
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  const deauthorizeAccount = async (accountId) => {
+    try {
+      await api(`/api/accounts/${accountId}/deauthorize`, { method: 'POST' })
+      setError('')
+      await loadAccounts()
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  const stopRental = async (accountId) => {
+    const confirmed = window.confirm(
+      'Are you sure you want to stop the rental? This will change the password and log off the renter.'
+    )
+    if (!confirmed) return
+    try {
+      const result = await api(`/api/accounts/${accountId}/stop-rental`, { method: 'POST' })
+      let message = result.message || 'Rental stopped successfully.'
+      if (result.warnings && result.warnings.length > 0) {
+        message += `\n${result.warnings.join('\n')}`
+      }
+      window.alert(message)
+      await loadAccounts()
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  const openChangePassword = (accountId) => {
+    setPasswordModal({ accountId, newPassword: '' })
+  }
+
+  const changePassword = async () => {
+    if (!passwordModal?.accountId) return
+    if (!passwordModal.newPassword || passwordModal.newPassword.length < 8) {
+      setError('Password must be at least 8 characters long.')
+      return
+    }
+    try {
+      await api(`/api/accounts/${passwordModal.accountId}/change-password`, {
+        method: 'POST',
+        body: JSON.stringify({ new_password: passwordModal.newPassword }),
+      })
+      setError('')
+      setPasswordModal(null)
+      await loadAccounts()
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  const getTwoFactorCode = async (accountId) => {
+    try {
+      const result = await api(`/api/accounts/${accountId}/code`)
+      if (result.code) {
+        setLoginCodes((prev) => ({ ...prev, [accountId]: result.code }))
+        setError('')
+      }
+    } catch (e) {
+      setError(e.message)
+    }
+  }
 
   const activeDialog = dialogs.find((d) => d.node_id === activeChatNode)
   const activeName = activeDialog?.name || activeDialog?.user_id || activeDialog?.node_id || 'Dialog'
@@ -414,6 +590,284 @@ export default function App() {
                   </ScrollArea>
                 </Paper>
               </Stack>
+
+              <Paper withBorder radius="md" p="md" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                <Group justify="space-between" mb="xs">
+                  <Text fw={700}>Accounts</Text>
+                  <Badge color="gray" variant="light">
+                    Live
+                  </Badge>
+                </Group>
+                <Stack gap="xs">
+                  <TextInput
+                    label="Label"
+                    placeholder="Main account"
+                    value={accountForm.label}
+                    onChange={(e) =>
+                      setAccountForm((prev) => ({ ...prev, label: e.target.value }))
+                    }
+                  />
+                  <TextInput
+                    label="Username"
+                    placeholder="steam_login"
+                    value={accountForm.username}
+                    onChange={(e) =>
+                      setAccountForm((prev) => ({ ...prev, username: e.target.value }))
+                    }
+                  />
+                  <PasswordInput
+                    label="Password"
+                    placeholder="Not stored"
+                    value={accountForm.password}
+                    onChange={(e) =>
+                      setAccountForm((prev) => ({ ...prev, password: e.target.value }))
+                    }
+                  />
+                  <TextInput
+                    label="SteamID"
+                    placeholder="7656119..."
+                    value={accountForm.steamId}
+                    onChange={(e) =>
+                      setAccountForm((prev) => ({ ...prev, steamId: e.target.value }))
+                    }
+                  />
+                  <TextInput
+                    label="2FA OTP"
+                    placeholder="Shared secret or 5-char code"
+                    value={accountForm.guard}
+                    onChange={(e) => setAccountForm((prev) => ({ ...prev, guard: e.target.value }))}
+                  />
+                  <Button
+                    onClick={addAccount}
+                    disabled={!accountForm.username.trim() || !accountForm.password.trim()}
+                  >
+                    Add account
+                  </Button>
+                  <Text size="xs" c="dimmed">
+                    Stored in database. Keep secrets secure.
+                  </Text>
+                </Stack>
+
+                <Divider my="sm" />
+
+                <ScrollArea style={{ flex: 1, minHeight: 0 }} offsetScrollbars scrollbarSize={8}>
+                  <Stack gap="sm">
+                    {accounts.length === 0 && (
+                      <Text size="sm" c="dimmed">
+                        No accounts yet.
+                      </Text>
+                    )}
+                    {accounts.map((account) => {
+                      const busy = accountBusy[account.id] || false
+                      const isOnline = account.login_status === 'online'
+                      const isGuardEmail = account.login_status === 'guard:email'
+                      const isGuardTwoFactor = account.login_status === 'guard:twofactor'
+                      const isError = account.login_status?.startsWith('error:')
+                      const statusInfo = getAccountStatusInfo(account.login_status)
+
+                      return (
+                        <Paper
+                          key={account.id}
+                          withBorder
+                          radius="md"
+                          p="md"
+                          style={{
+                            borderColor: isOnline
+                              ? 'var(--mantine-color-green-6)'
+                              : isGuardEmail || isGuardTwoFactor
+                                ? 'var(--mantine-color-yellow-6)'
+                                : isError
+                                  ? 'var(--mantine-color-red-6)'
+                                  : undefined,
+                          }}
+                        >
+                          <Stack gap="sm">
+                            <Group justify="space-between" wrap="nowrap">
+                              <Box style={{ flex: 1, minWidth: 0 }}>
+                                <Group gap="xs" mb={4}>
+                                  <Text size="sm" fw={600} truncate>
+                                    {account.label || account.username}
+                                  </Text>
+                                  {busy && (
+                                    <Text size="xs" c="dimmed">
+                                      Working...
+                                    </Text>
+                                  )}
+                                </Group>
+                                <Text size="xs" c="dimmed" truncate>
+                                  {account.steam_id
+                                    ? `SteamID: ${account.steam_id}`
+                                    : 'SteamID: Not set'}
+                                </Text>
+                              </Box>
+                              <Badge color={statusInfo.color} variant="light" size="sm">
+                                {statusInfo.label}
+                              </Badge>
+                            </Group>
+
+                            {isGuardEmail && (
+                              <Alert color="yellow" variant="light" p="xs" radius="sm">
+                                <Text size="xs">
+                                  Email guard code required. Check your inbox and enter the code below.
+                                </Text>
+                              </Alert>
+                            )}
+                            {isGuardTwoFactor && (
+                              <Alert color="yellow" variant="light" p="xs" radius="sm">
+                                <Text size="xs">
+                                  Two-factor code required. Enter your 5-character mobile code below.
+                                </Text>
+                              </Alert>
+                            )}
+                            {isError && (
+                              <Alert color="red" variant="light" p="xs" radius="sm">
+                                <Text size="xs">{getAccountErrorText(account.login_status)}</Text>
+                              </Alert>
+                            )}
+                            {isOnline && (
+                              <Alert color="green" variant="light" p="xs" radius="sm">
+                                <Text size="xs">Account is online and ready to use.</Text>
+                              </Alert>
+                            )}
+
+                            {!isOnline && (
+                              <Stack gap="xs">
+                                <TextInput
+                                  size="sm"
+                                  placeholder={
+                                    isGuardEmail
+                                      ? 'Enter 5-character email code (e.g., A1B2C)'
+                                      : isGuardTwoFactor
+                                        ? 'Enter 5-character 2FA code'
+                                        : 'Enter code if required (leave empty for first attempt)'
+                                  }
+                                  value={loginCodes[account.id] || ''}
+                                  onChange={(e) => {
+                                    const next = e.target.value
+                                      .toUpperCase()
+                                      .replace(/[^A-Z0-9]/g, '')
+                                      .slice(0, 5)
+                                    setLoginCodes((prev) => ({ ...prev, [account.id]: next }))
+                                  }}
+                                  disabled={busy}
+                                  maxLength={5}
+                                  style={{ fontFamily: 'monospace', letterSpacing: '2px' }}
+                                />
+                                <Group gap="xs">
+                                  <Button
+                                    size="sm"
+                                    onClick={() => loginAccount(account.id)}
+                                    disabled={busy || isOnline}
+                                    loading={busy}
+                                    style={{ flex: 1 }}
+                                  >
+                                    {busy
+                                      ? 'Logging in...'
+                                      : isGuardEmail || isGuardTwoFactor
+                                        ? 'Submit Code'
+                                        : 'Login'}
+                                  </Button>
+                                </Group>
+                              </Stack>
+                            )}
+
+                            {isOnline && (
+                              <Stack gap="xs" mt="sm">
+                                <Divider label="Control Panel" labelPosition="center" />
+                                <Button
+                                  size="md"
+                                  variant="filled"
+                                  color="red"
+                                  onClick={() => stopRental(account.id)}
+                                  fullWidth
+                                >
+                                  Stop Rental (Force Logout)
+                                </Button>
+                                <Group gap="xs">
+                                  <Button
+                                    size="sm"
+                                    variant="light"
+                                    color="red"
+                                    onClick={() => logoutAccount(account.id)}
+                                    style={{ flex: 1 }}
+                                  >
+                                    Logout
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="light"
+                                    color="orange"
+                                    onClick={() => deauthorizeAccount(account.id)}
+                                    style={{ flex: 1 }}
+                                  >
+                                    Log Off Everyone
+                                  </Button>
+                                </Group>
+                                <Button
+                                  size="sm"
+                                  variant="light"
+                                  color="blue"
+                                  onClick={() => openChangePassword(account.id)}
+                                  fullWidth
+                                >
+                                  Change Password
+                                </Button>
+                                {account.has_twofa_otp && (
+                                  <Button
+                                    size="sm"
+                                    variant="light"
+                                    onClick={() => getTwoFactorCode(account.id)}
+                                    fullWidth
+                                  >
+                                    Get 2FA Code
+                                  </Button>
+                                )}
+                              </Stack>
+                            )}
+                          </Stack>
+                        </Paper>
+                      )
+                    })}
+                  </Stack>
+                </ScrollArea>
+              </Paper>
+            </Box>
+          )}
+        </Box>
+
+        <Modal
+          opened={passwordModal !== null}
+          onClose={() => setPasswordModal(null)}
+          title="Change Steam Password"
+          centered
+        >
+          <Stack gap="md">
+            <Text size="sm" c="dimmed">
+              Enter a new password for this Steam account. The password must be at least 8 characters long.
+            </Text>
+            <PasswordInput
+              label="New Password"
+              placeholder="Enter new password"
+              value={passwordModal?.newPassword || ''}
+              onChange={(e) =>
+                setPasswordModal((prev) => ({ ...prev, newPassword: e.target.value }))
+              }
+              required
+            />
+            <Group justify="flex-end">
+              <Button variant="subtle" onClick={() => setPasswordModal(null)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={changePassword}
+                disabled={!passwordModal?.newPassword || passwordModal.newPassword.length < 8}
+              >
+                Change Password
+              </Button>
+            </Group>
+          </Stack>
+        </Modal>
+      </AppShell.Main>
     </AppShell>
   )
 }
