@@ -5,7 +5,6 @@ import logging
 import os
 import time
 import re
-from collections import defaultdict
 from dataclasses import dataclass
 from typing import Iterable, Optional
 from urllib.parse import quote_plus, urlparse
@@ -23,6 +22,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 from steam.client import SteamClient as BaseSteamClient
 from steam.enums import EResult
+from eventemitter import EventEmitter
 
 load_dotenv()
 logging.basicConfig(
@@ -1360,12 +1360,10 @@ if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
 class SteamClient(BaseSteamClient):
     def __init__(self, *args, **kwargs):
-        if not hasattr(self, "_listeners"):
-            self._listeners = defaultdict(list)
-        if not hasattr(self, "_once"):
-            self._once = defaultdict(list)
-        if not hasattr(self, "_wildcard_listeners"):
-            self._wildcard_listeners = []
-        if not hasattr(self, "_max_listeners"):
-            self._max_listeners = 0
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        EventEmitter.__init__(self, loop=loop)
         super().__init__(*args, **kwargs)
