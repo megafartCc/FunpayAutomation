@@ -1136,13 +1136,31 @@ def login_account(account_id: int, payload: AccountLogin, session: Session = Dep
     logging.info("Steam login result for account %s: %s", account_id, result)
     ok = result is True or result == EResult.OK
     if not ok:
-        logging.warning("Steam login failed for account %s: %s", account_id, result)
+        logging.warning("Steam login failed for account %s: %s (EResult code: %s)", account_id, result, int(result) if hasattr(result, '__int__') else result)
+        
+        # Map EResult codes to status strings
         status_map = {
             getattr(EResult, "AccountLogonDenied", None): "guard:email",
             getattr(EResult, "AccountLogonDeniedNeedTwoFactor", None): "guard:twofactor",
             getattr(EResult, "InvalidPassword", None): "error:invalid_password",
+            getattr(EResult, "InvalidLoginAuthCode", None): "error:invalid_auth_code",
+            getattr(EResult, "AccountNotFound", None): "error:account_not_found",
+            getattr(EResult, "RateLimitExceeded", None): "error:rate_limit",
         }
-        account.login_status = status_map.get(result, f"error:{result}")
+        
+        # Also check by numeric code (63 = InvalidLoginAuthCode typically)
+        result_code = int(result) if hasattr(result, '__int__') else None
+        if result_code == 63:
+            account.login_status = "error:invalid_auth_code"
+        elif result_code == 5:
+            account.login_status = "error:invalid_password"
+        elif result_code == 65:
+            account.login_status = "guard:email"
+        elif result_code == 85:
+            account.login_status = "guard:twofactor"
+        else:
+            account.login_status = status_map.get(result, f"error:{result_code or result}")
+        
         account.updated_at = time.time()
         session.add(account)
         session.commit()
@@ -1152,8 +1170,11 @@ def login_account(account_id: int, payload: AccountLogin, session: Session = Dep
             "guard:email": "Email verification code required. Check your email and enter the code.",
             "guard:twofactor": "2FA code required. Enter your Steam Guard code.",
             "error:invalid_password": "Invalid username or password.",
+            "error:invalid_auth_code": "Invalid authentication code. Please check your email/2FA code and try again.",
+            "error:account_not_found": "Steam account not found. Check your username.",
+            "error:rate_limit": "Too many login attempts. Please wait a few minutes.",
         }
-        error_msg = error_messages.get(account.login_status, f"Login failed: {result}")
+        error_msg = error_messages.get(account.login_status, f"Login failed (Error code: {result_code or result}). Check your credentials and try again.")
         raise HTTPException(status_code=401, detail=error_msg)
 
     steam_clients[account_id] = client
