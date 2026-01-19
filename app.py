@@ -1604,19 +1604,23 @@ def list_accounts(session: Session = Depends(get_session)):
     try:
         rows = session.exec(select(Account).order_by(Account.id.desc())).all()
         return [
-        {
-            "id": row.id,
-            "label": row.label,
-            "username": row.username,
-            "steam_id": row.steam_id,
-            "login_status": row.login_status,
-            "has_password": bool(row.password),
-            "has_twofa_otp": bool(row.twofa_otp),
-            "created_at": row.created_at,
-            "updated_at": row.updated_at,
-        }
-        for row in rows
-    ]
+            {
+                "id": row.id,
+                "label": row.label,
+                "username": row.username,
+                "steam_id": row.steam_id,
+                "login_status": row.login_status,
+                "has_password": bool(row.password),
+                "has_twofa_otp": bool(row.twofa_otp),
+                "created_at": row.created_at,
+                "updated_at": row.updated_at,
+            }
+            for row in rows
+        ]
+    except Exception as exc:
+        logging.exception("Error loading accounts: %s", exc)
+        # Return empty array instead of crashing
+        return []
 
 
 @app.post("/api/accounts")
