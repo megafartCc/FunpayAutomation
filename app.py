@@ -561,7 +561,7 @@ class FunpayClient:
         try:
             resp = await self.client.get("/orders/sell")
             resp.raise_for_status()
-        except httpx.HTTPStatusError:
+        except Exception:
             resp = await self.client.get("/orders/trade")
             resp.raise_for_status()
 
