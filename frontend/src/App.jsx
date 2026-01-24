@@ -20,9 +20,11 @@ import {
 import { useMediaQuery } from '@mantine/hooks'
 
 const api = async (path, options = {}) => {
+  const { signal, ...restOptions } = options
   const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-    ...options,
+    headers: { 'Content-Type': 'application/json', ...(restOptions.headers || {}) },
+    signal,
+    ...restOptions,
   })
 
   const text = await res.text()
@@ -97,6 +99,7 @@ export default function App() {
   const [loadingMsgs, setLoadingMsgs] = useState(false)
   const [lots, setLots] = useState([])
   const [loadingLots, setLoadingLots] = useState(false)
+  const [loadingDialogs, setLoadingDialogs] = useState(false)
   const [accounts, setAccounts] = useState([])
   const [accountForm, setAccountForm] = useState({
     label: '',
@@ -151,54 +154,78 @@ export default function App() {
   }
 
   const loadDialogs = async (retries = 3) => {
+    setLoadingDialogs(true)
     for (let i = 0; i < retries; i++) {
       try {
-        const data = await api('/api/dialogs?resolve=1&resolve_limit=200')
-        setDialogs(Array.isArray(data) ? data : [])
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 15000) // 15s timeout
+        const data = await api('/api/dialogs?resolve=1&resolve_limit=200', { signal: controller.signal })
+        clearTimeout(timeoutId)
+        if (Array.isArray(data)) {
+          setDialogs(data)
+        }
+        setLoadingDialogs(false)
         return
       } catch (e) {
-        console.error(`Failed to load dialogs (attempt ${i + 1}/${retries}):`, e)
-        if (i === retries - 1) {
-          console.warn('Dialogs failed to load after retries')
+        if (e.name === 'AbortError') {
+          console.warn(`Dialogs request timed out (attempt ${i + 1}/${retries})`)
         } else {
-          await new Promise((resolve) => setTimeout(resolve, 1000 * (i + 1)))
+          console.error(`Failed to load dialogs (attempt ${i + 1}/${retries}):`, e)
+        }
+        if (i < retries - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 2000 * (i + 1)))
         }
       }
     }
+    setLoadingDialogs(false)
   }
 
   const loadLots = async (retries = 3) => {
     setLoadingLots(true)
     for (let i = 0; i < retries; i++) {
       try {
-        const data = await api('/api/lots')
-        setLots(Array.isArray(data) ? data : [])
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 15000) // 15s timeout
+        const data = await api('/api/lots', { signal: controller.signal })
+        clearTimeout(timeoutId)
+        if (Array.isArray(data)) {
+          setLots(data)
+        }
         setLoadingLots(false)
         return
       } catch (e) {
-        console.error(`Failed to load lots (attempt ${i + 1}/${retries}):`, e)
-        if (i === retries - 1) {
-          setError('Failed to load lots: ' + e.message)
-          setLoadingLots(false)
+        if (e.name === 'AbortError') {
+          console.warn(`Lots request timed out (attempt ${i + 1}/${retries})`)
         } else {
-          await new Promise((resolve) => setTimeout(resolve, 1000 * (i + 1)))
+          console.error(`Failed to load lots (attempt ${i + 1}/${retries}):`, e)
+        }
+        if (i < retries - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 2000 * (i + 1)))
         }
       }
     }
+    setLoadingLots(false)
   }
 
   const loadAccounts = async (retries = 3) => {
     for (let i = 0; i < retries; i++) {
       try {
-        const data = await api('/api/accounts')
-        setAccounts(Array.isArray(data) ? data : [])
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 15000) // 15s timeout
+        const data = await api('/api/accounts', { signal: controller.signal })
+        clearTimeout(timeoutId)
+        if (Array.isArray(data)) {
+          setAccounts(data)
+        }
         return
       } catch (e) {
-        console.error(`Failed to load accounts (attempt ${i + 1}/${retries}):`, e)
-        if (i === retries - 1) {
-          setError('Failed to load accounts: ' + e.message)
+        if (e.name === 'AbortError') {
+          console.warn(`Accounts request timed out (attempt ${i + 1}/${retries})`)
         } else {
-          await new Promise((resolve) => setTimeout(resolve, 1000 * (i + 1)))
+          console.error(`Failed to load accounts (attempt ${i + 1}/${retries}):`, e)
+        }
+        if (i < retries - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 2000 * (i + 1)))
         }
       }
     }
@@ -419,7 +446,12 @@ export default function App() {
             </Group>
             <ScrollArea style={{ flex: 1, minHeight: 0 }} offsetScrollbars scrollbarSize={8}>
               <Stack gap="xs">
-                {dialogs.length === 0 && (
+                {loadingDialogs && dialogs.length === 0 && (
+                  <Text size="sm" c="dimmed">
+                    Loading chats...
+                  </Text>
+                )}
+                {!loadingDialogs && dialogs.length === 0 && (
                   <Text size="sm" c="dimmed">
                     No dialogs yet.
                   </Text>
